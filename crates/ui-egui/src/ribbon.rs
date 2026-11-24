@@ -79,6 +79,10 @@ fn no_ribbon() -> RibbonOutput<String> {
 /// over a 3-point underline; its body stands on its own lighter fill, ruled above and below.
 const RIBBON_LOOK: RibbonLook = RibbonLook::new(32, 17).arrow(10).row(20).tabs(3).body();
 
+/// Touch-adapted ribbon look: enforces 44pt hit targets, 38pt large icons,
+/// 22pt small icons, and 28pt rows with generous spacing for iPad touch ergonomics.
+const RIBBON_LOOK_TOUCH: RibbonLook = RibbonLook::new(38, 22).arrow(12).row(28).tabs(4).body();
+
 /// Draws the Read toolbar or the full ribbon, switching to and from the contextual Equation and
 /// Outlining tabs and showing the available tab strip. The output carries the record of the ribbon's
 /// controls for the keytips.
@@ -173,7 +177,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) -> RibbonOutput<String> {
         .context_menu(&mut |ui, request, _| context_menu::rows(ui, request, &qat, qat_shown))
         // The old ribbon drew its large icons 32 points square and every other icon 17, and its
         // dialog launcher as a small corner arrow.
-        .look(RIBBON_LOOK)
+        .look(if app.input_mode.is_touch() { RIBBON_LOOK_TOUCH } else { RIBBON_LOOK })
         .launcher_icon(IconId::new("launcher"))
         .show(ui, |row, key| {
             let entry = user_tabs.iter().find(|e| e.name == *key);

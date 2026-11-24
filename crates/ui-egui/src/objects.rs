@@ -50,6 +50,7 @@ use crate::WordApp;
 
 /// The band along a text box's border that grabs the box rather than its text, screen points.
 const EDGE: f32 = 5.0;
+const EDGE_TOUCH: f32 = 18.0;
 /// How opaque the drag preview of an object's pixels is (0–1).
 const PREVIEW_SHARE: f32 = 170.0 / 255.0;
 /// Arrow-key nudge, points (Ctrl/Alt: fine).
@@ -287,8 +288,9 @@ fn page_at<'a>(body: &'a PageBody<'_>, layout: &DocLayout, at: Pos2) -> Option<(
 }
 
 /// The width of the text-box edge band on `pp`, page points.
-fn edge_of(pp: &PlacedPage) -> f32 {
-    EDGE / (pp.scale as f32).max(0.01)
+fn edge_of(app: &WordApp, pp: &PlacedPage) -> f32 {
+    let edge_px = if app.input_mode.is_touch() { EDGE_TOUCH } else { EDGE };
+    edge_px / (pp.scale as f32).max(0.01)
 }
 
 fn pt(x: f32, y: f32) -> Point {
@@ -569,7 +571,7 @@ impl ObjectGesture {
         // ponytail: headers/footers only; body Behind Text pictures clear of text could do the same.
         let clear_of_text = matches!(object.story, StoryRef::Part(_))
             && page_at(body, layout, at)
-                .and_then(|(pp, x, y)| layout.object_at_in(pp.page, x, y, edge_of(pp), object.story))
+                .and_then(|(pp, x, y)| layout.object_at_in(pp.page, x, y, edge_of(app, pp), object.story))
                 .is_some_and(|o| o.pos() == object.pos());
         if object.behind() && !clear_of_text && behind_draggable(app, &object) {
             let mut g = Self::start(body, object, at)?;
@@ -712,7 +714,7 @@ impl ObjectGesture {
     pub(crate) fn cursor(app: &WordApp, layout: &DocLayout, body: &PageBody, at: Pos2, mods: Mods) -> Option<Cursor> {
         let o = grab_at(app, layout, body, at)?;
         let (pp, x, y) = page_at(body, layout, at)?;
-        let in_member_text = o.member.is_some() && in_text(&o, x, y, edge_of(pp));
+        let in_member_text = o.member.is_some() && in_text(&o, x, y, edge_of(app, pp));
         let icon = if in_member_text && !fixed(app, &o) {
             CursorIcon::Text
         } else if fixed(app, &o) || size_only(app, &o) {
@@ -731,7 +733,7 @@ impl ObjectGesture {
 /// starts dragging it.
 fn press_member(app: &mut WordApp, layout: &DocLayout, body: &PageBody, at: Pos2, object: ObjectHit, index: usize) -> Option<ObjectGesture> {
     if let (Some(id), Some((pp, x, y))) = (object.text_box, page_at(body, layout, at))
-        && in_text(&object, x, y, edge_of(pp))
+        && in_text(&object, x, y, edge_of(app, pp))
     {
         // A box linked from another shows (and edits) that box's story.
         let id = app.session.doc.text_box_chain(id).and_then(|c| c.first().copied()).unwrap_or(id);
@@ -903,7 +905,7 @@ fn object_link(app: &WordApp, object: &ObjectHit) -> Option<String> {
 fn grab_at(app: &WordApp, layout: &DocLayout, body: &PageBody, at: Pos2) -> Option<ObjectHit> {
     let story = active_story(app, layout);
     let (pp, x, y) = page_at(body, layout, at)?;
-    let (page, edge) = (pp.page, edge_of(pp));
+    let (page, edge) = (pp.page, edge_of(app, pp));
     // A Behind Text picture is normally hit only where no body text is present, so text above
     // it remains easy to edit. Once the picture is selected (for example with the arrow keys
     // or the Selection Pane), let its own frame win inside the frame so the user can drag it
@@ -947,7 +949,7 @@ fn behind_draggable(app: &WordApp, o: &ObjectHit) -> bool {
 fn behind_drag_at(app: &WordApp, layout: &DocLayout, body: &PageBody, at: Pos2) -> Option<ObjectHit> {
     let story = active_story(app, layout);
     let (pp, x, y) = page_at(body, layout, at)?;
-    let (page, edge) = (pp.page, edge_of(pp));
+    let (page, edge) = (pp.page, edge_of(app, pp));
     layout.find_object(page, |o| {
         o.page == page
             && o.story == story

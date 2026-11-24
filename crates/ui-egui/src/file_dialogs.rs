@@ -142,9 +142,9 @@ impl WordApp {
         match picked {
             Picked::Cancelled => Some(self.finish_pick(d.after, None)),
             Picked::Unavailable(cause) => {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
                 self.status(craft::dialogs::ui::UnavailableWords::default().sentence(&cause));
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
                 self.status(format!("No file dialog can open: {cause}"));
                 Some(self.finish_pick(d.after, None))
             }

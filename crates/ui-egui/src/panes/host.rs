@@ -21,13 +21,79 @@ pub(super) struct Content<'a, 'b> {
 }
 
 /// Draw the open panes around the document and run `centre` in what they leave. Call in place of the document's
-/// central panel.
+/// central panel. When window width is constrained (< 800pt in Split View / Stage Manager), docked panes
+/// auto-collapse into an overlay slide-over drawer so the document canvas remains completely unobstructed.
 pub fn show(app: &mut WordApp, ui: &mut Ui, mut centre: impl FnMut(&mut Ui, &mut BodyCx<'_>, &mut WordApp)) {
     let (rtl, size) = {
         let env = Env::of(ui);
         (env.direction.is_rtl(), env.tokens.size)
     };
     let open = open(app);
+    let narrow = ui.available_width() < 800.0;
+    if narrow && !open.is_empty() {
+        let cell = RefCell::new(&mut *app);
+        let mut content = Content { app: &cell, rtl, size };
+        let empty_open: Vec<Pane> = Vec::new();
+        PaneArea::new(tl!("Task Panes").to_owned(), &empty_open, &mut content)
+            .policy(SidePolicy::Columns)
+            .show(ui, |ui, cx| centre(ui, cx, &mut cell.borrow_mut()));
+
+        let mut close_pane: Option<Pane> = None;
+        let drawer_width = 320.0f32.min(ui.available_width() * 0.85);
+        let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+
+        // 1. Semi-transparent backdrop to dismiss drawer on outside tap
+        let backdrop_id = ui.scope_id().with("slide_over_drawer_backdrop");
+        egui::Area::new(backdrop_id).order(egui::Order::Middle).fixed_pos(screen_rect.min).show(ui.ctx(), |ui| {
+            let (rect, resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(80));
+            if resp.clicked() {
+                if let Some(first) = open.first() {
+                    close_pane = Some(*first);
+                }
+            }
+        });
+
+        // 2. Slide-over drawer card
+        let drawer_id = ui.scope_id().with("slide_over_drawer_card");
+        let drawer_pos = if rtl { screen_rect.min } else { egui::pos2(screen_rect.max.x - drawer_width, screen_rect.min.y) };
+        egui::Area::new(drawer_id).order(egui::Order::Foreground).fixed_pos(drawer_pos).show(ui.ctx(), |ui| {
+            egui::Frame::window(ui.style())
+                .corner_radius(egui::CornerRadius::ZERO)
+                .shadow(egui::epaint::Shadow {
+                    offset: [if rtl { 4 } else { -4 }, 0],
+                    blur: 16,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(100),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(drawer_width);
+                    ui.set_height(screen_rect.height());
+
+                    if let Some(first_pane) = open.first() {
+                        ui.horizontal(|ui| {
+                            ui.heading(tl!(first_pane.title()));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add_sized([44.0, 44.0], egui::Button::new("✕")).clicked() {
+                                    close_pane = Some(*first_pane);
+                                }
+                            });
+                        });
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let mut app = cell.borrow_mut();
+                            super::pane_body(&mut app, ui, *first_pane);
+                        });
+                    }
+                });
+        });
+
+        if let Some(pane) = close_pane {
+            close(app, pane);
+        }
+        return;
+    }
+
     let requests = {
         let cell = RefCell::new(&mut *app);
         let mut content = Content { app: &cell, rtl, size };

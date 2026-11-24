@@ -1,0 +1,27 @@
+[package]
+name = "wordcraft-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "WordCraft iPadOS platform layer and C FFI bridge"
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lib]
+name = "wordcraft"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+wordcraft-engine = { workspace = true }
+wordcraft-ui-egui = { workspace = true }
+wordcraft-doc = { workspace = true }
+wordcraft-docx = { workspace = true }
+wordcraft-geom = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+craft = { workspace = true, features = ["ui", "ui-app"] }

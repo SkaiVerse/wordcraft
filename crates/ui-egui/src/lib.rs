@@ -7,7 +7,7 @@
 
 /// WordCraft as craft-update knows it, with its 128 px icon and accent colour: the update
 /// prompt shows both, and an AppImage's menu entry gets the icon.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 pub const UPDATE_APP: craft::update::app::App = craft::update::app::App {
     icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.wordcraft.png")),
     accent: Some([0x3f, 0x5f, 0xe0]),
@@ -137,6 +137,33 @@ struct SaveInFlight {
     /// Puts back what a Save stamped (zoom, author, dates, revision) and the dirty flag, when the
     /// save doesn't reach its destination and nothing was edited since. `None` for an export.
     undo_stamp: Option<Box<dyn FnOnce(&mut wordcraft_engine::Session)>>,
+}
+
+/// The interaction mode driving the interface: Pointer (mouse/trackpad), Touch (finger/Apple Pencil), or Hybrid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputMode {
+    /// Desktop-style mouse or trackpad: compact UI density, hover states, 4pt resize grab zones.
+    #[default]
+    Pointer,
+    /// Direct finger or stylus touch: minimum 44x44pt hit targets, enlarged resize handles, touch scrolling.
+    Touch,
+    /// Dual mode (iPad with Magic Keyboard / external trackpad): supports hover states and touch hit sizing simultaneously.
+    Hybrid,
+}
+
+impl InputMode {
+    /// Whether touch hit-target sizing and touch ergonomics should be active.
+    #[inline]
+    pub fn is_touch(self) -> bool {
+        matches!(self, Self::Touch | Self::Hybrid)
+    }
+
+    /// Whether mouse hover states, compact desktop density, and cursor shapes are active.
+    #[inline]
+    pub fn is_pointer(self) -> bool {
+        matches!(self, Self::Pointer | Self::Hybrid)
+    }
 }
 
 /// File › Options › Advanced › Linux display server (#2184, `ui.displayServer`): how the desktop
@@ -431,7 +458,7 @@ pub struct WordApp {
     /// Focus (#1678): the ribbon is dropped down from the Focus bar, over the page. The shell
     /// owns the flag while it draws; the app reads it back after each pass.
     pub(crate) ribbon_dropped: bool,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "ios"), allow(dead_code))]
     pub(crate) updates_rt: updates_ui::Runtime,
     /// The documents (by id) the missing-fonts download box has been considered for
     /// ([`font_download::tick`]), in every window.
@@ -549,6 +576,10 @@ pub struct WordApp {
     pub(crate) print: print_page::PrintPage,
     /// The target of each open More Colors dialog, by its dialog key.
     pub(crate) more_colors: std::collections::HashMap<String, colors::Target>,
+    /// The active interaction mode (Touch, Pointer, or Hybrid).
+    pub input_mode: InputMode,
+    /// Safe bottom viewport inset (e.g., virtual keyboard height in points).
+    pub keyboard_inset_bottom: f32,
 }
 
 /// Every `.rs` file under `dir`, subdirectories included, in a fixed order: tests that scan the

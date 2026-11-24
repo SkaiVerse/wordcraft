@@ -82,7 +82,7 @@ struct PagePointer<'a> {
 
 /// The page under `p` and the point on it. With Hide White Space the pages' rects overlap in the margins it hides: a
 /// point there belongs to the page whose shown band is nearest, so a click just past one page's text is still on it.
-fn page_of(pages: &[PlacedPage], p: Pos2) -> Option<(usize, f32, f32)> {
+pub(super) fn page_of(pages: &[PlacedPage], p: Pos2) -> Option<(usize, f32, f32)> {
     let away = |pl: &PlacedPage| {
         let y = p.y - pl.rect.min.y;
         (pl.band.0 - y).max(0.0).max(y - pl.band.1)
@@ -145,7 +145,7 @@ impl<'a> PageTextTool<'a> {
                 app.session.page_hint = page;
                 app.canvas.glide.restart(craft::platform::clock::monotonic_ms());
             }
-        } else if let Some(pos) = layout.hit(page, x, y, story)
+        } else if let Some(pos) = super::touch_editing::touch_hit(&layout, page, x, y, story, app.input_mode.is_touch())
             && pos != app.session.sel_ends().focus
         {
             // Through the command, so from one table cell into another the drag takes whole cells
@@ -433,7 +433,7 @@ fn handle_primary_press(
         app.canvas.dragging = true;
         return true;
     }
-    let Some(pos) = layout.hit(page, x, y, story) else { return true };
+    let Some(pos) = super::touch_editing::touch_hit(layout, page, x, y, story, app.input_mode.is_touch()) else { return true };
     // Ctrl/⌘+click follows a hyperlink.
     if mods.command
         && let Some(link) = link_under(app, layout, page, x, y, &pos)

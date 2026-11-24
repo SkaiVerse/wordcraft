@@ -38,6 +38,26 @@ static APP_SIZES: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = 
     std::sync::Arc::new(craft::theme::AppSizes { all, ..Default::default() })
 });
 
+/// Touch-adapted interface metrics: enforces minimum 44x44pt hit targets across controls, buttons,
+/// and handles for comfortable touch ergonomics on iPadOS.
+static APP_SIZES_TOUCH: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = std::sync::LazyLock::new(|| {
+    use craft::theme::SizeValue;
+    let all = [
+        ("typography.display.size", 26.0),
+        ("typography.display.line_height", 32.0),
+        ("control.button.least_height", 44.0),
+        ("control.button.least_width", 44.0),
+        ("control.row.least_height", 44.0),
+        ("control.handle.sm", 24.0),
+        ("control.handle.md", 32.0),
+        ("control.handle.lg", 44.0),
+    ]
+    .into_iter()
+    .map(|(path, value)| (path.to_owned(), SizeValue::Number(value)))
+    .collect();
+    std::sync::Arc::new(craft::theme::AppSizes { all, ..Default::default() })
+});
+
 impl WordApp {
     /// Creates the app: adopts the system locale, then initializes the document session, UI state,
     /// services, printing, canvas, dialogs, previews and font tracking.
@@ -98,7 +118,7 @@ impl WordApp {
             settings: None,
             settings_notices: Default::default(),
             command_catalog: None,
-            command_catalog_mac: cfg!(target_os = "macos"),
+            command_catalog_mac: cfg!(any(target_os = "macos", target_os = "ios")),
             command_catalog_lang: "",
             key_overrides: Default::default(),
             command_states: Default::default(),
@@ -170,7 +190,29 @@ impl WordApp {
             equation_symbol_set,
             md_source_visit,
             more_colors,
+            input_mode: super::InputMode::default(),
+            keyboard_inset_bottom: 0.0,
         }
+    }
+
+    /// Returns the active interaction mode (Touch, Pointer, or Hybrid).
+    pub fn input_mode(&self) -> super::InputMode {
+        self.input_mode
+    }
+
+    /// Sets the active interaction mode.
+    pub fn set_input_mode(&mut self, mode: super::InputMode) {
+        self.input_mode = mode;
+    }
+
+    /// Whether touch hit-target sizing and ergonomics are active.
+    pub fn is_touch_mode(&self) -> bool {
+        self.input_mode.is_touch()
+    }
+
+    /// Sets the safe bottom keyboard inset in points.
+    pub fn set_keyboard_inset_bottom(&mut self, inset: f32) {
+        self.keyboard_inset_bottom = inset.max(0.0);
     }
 
     /// The app with `host` as its services: files, jobs, settings sections and the language.
@@ -208,7 +250,7 @@ impl WordApp {
             .alt_code_pages(AltCodePages::new(ansi, oem))
             .set(ComponentSet::Productivity);
         env.motion = self.ui.animations.motion();
-        env.sizes = std::sync::Arc::clone(&APP_SIZES);
+        env.sizes = if self.input_mode.is_touch() { std::sync::Arc::clone(&APP_SIZES_TOUCH) } else { std::sync::Arc::clone(&APP_SIZES) };
         env
     }
 

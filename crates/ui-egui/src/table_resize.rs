@@ -26,6 +26,13 @@ use crate::WordApp;
 
 /// How near (screen pixels) the pointer has to be to a border to grab it.
 pub(crate) const REACH_PX: f32 = 4.0;
+/// In touch mode, how near (screen points) the finger has to be to grab a border (minimum 44pt touch corridor).
+pub(crate) const REACH_TOUCH_PX: f32 = 22.0;
+
+/// Hit-testing reach in screen pixels based on active input mode.
+pub(crate) fn reach_px(app: &WordApp) -> f32 {
+    if app.input_mode.is_touch() { REACH_TOUCH_PX } else { REACH_PX }
+}
 
 /// The part of a column border between two columns.
 const COLUMN_BORDER: PartKey = PartKey::new("column_border");
@@ -137,6 +144,12 @@ pub(crate) fn page_point(placed: &PlacedPage, p: Pos2) -> (f32, f32) {
 /// Screen pixels of reach as page points on `page`; the reach itself when the page is not in view.
 pub(crate) fn reach_on(pages: &[PlacedPage], page: usize) -> f32 {
     pages.iter().find(|placed| placed.page == page).map_or(REACH_PX, |placed| REACH_PX / (placed.scale as f32).max(f32::EPSILON))
+}
+
+/// Screen pixels of reach as page points on `page` based on active input mode.
+pub(crate) fn reach_on_app(pages: &[PlacedPage], page: usize, app: &WordApp) -> f32 {
+    let r = reach_px(app);
+    pages.iter().find(|placed| placed.page == page).map_or(r, |placed| r / (placed.scale as f32).max(f32::EPSILON))
 }
 
 /// The page point (`x`, `y`) as a screen position on `placed`.
@@ -283,9 +296,10 @@ impl<'a> TableBorders<'a> {
     }
 }
 
-/// The face and edge of a resize handle at `r`.
-fn resize_handle(draw: &craft::ui::primitives::Draw<'_>, r: Rect, style: &TableBordersStyle) {
-    let shape = PaintShape::Rect(r, CornerRadius::ZERO);
+/// The face and edge of a resize handle at `r`. In touch mode, expands to a comfortable touch target.
+fn resize_handle(draw: &craft::ui::primitives::Draw<'_>, r: Rect, style: &TableBordersStyle, is_touch: bool) {
+    let rect = if is_touch { r.expand(6.0) } else { r };
+    let shape = PaintShape::Rect(rect, if is_touch { CornerRadius::same(4) } else { CornerRadius::ZERO });
     draw.fill(&shape, style.face);
     draw.stroke(&shape, StrokeWidth::Thin, style.edge);
 }
@@ -335,7 +349,7 @@ impl Component for TableBorders<'_> {
         }
         let mut index = 0u64;
         for placed in self.pages {
-            let reach = reach_on(self.pages, placed.page);
+            let reach = reach_on_app(self.pages, placed.page, self.app);
             for (area, target) in table_resize::borders(self.layout, &self.app.session.doc, placed.page, reach) {
                 let at = index;
                 index += 1;
@@ -415,23 +429,25 @@ impl Component for TableBorders<'_> {
         if !available(self.app) {
             return;
         }
+        let is_touch = self.app.input_mode.is_touch();
         // The caret's table shows its handle wherever the pointer is, as in Word.
         for (page, _, h) in caret_handles(self.app, self.pages, self.layout) {
             if let Some(h) = h
                 && let (Some(a), Some(b)) = (s(page, h.x, h.y), s(page, h.right(), h.bottom()))
             {
-                resize_handle(&draw, Rect::from_two_pos(a, b), style);
+                resize_handle(&draw, Rect::from_two_pos(a, b), style, is_touch);
             }
         }
         // The handle shows while the pointer is over the table (or on the handle itself).
         let Some(p) = self.pointer else { return };
         let Some(placed) = page_at(self.pages, p) else { return };
         let (x, y) = page_point(placed, p);
-        let Some(tg) = table_resize::table_under(self.layout, &self.app.session.doc, placed.page, x, y, REACH_PX / placed.scale as f32) else {
+        let reach = reach_px(self.app) / placed.scale as f32;
+        let Some(tg) = table_resize::table_under(self.layout, &self.app.session.doc, placed.page, x, y, reach) else {
             return;
         };
         let h = tg.handle();
-        resize_handle(&draw, Rect::from_two_pos(screen_of(placed, h.x, h.y), screen_of(placed, h.right(), h.bottom())), style);
+        resize_handle(&draw, Rect::from_two_pos(screen_of(placed, h.x, h.y), screen_of(placed, h.right(), h.bottom())), style, is_touch);
     }
 
     fn finish(self, cx: Cx<'_, Self>) -> Response {

@@ -46,6 +46,7 @@ mod reading_metrics;
 pub(crate) mod rulers;
 mod source;
 mod story;
+pub(crate) mod touch_editing;
 
 pub use balloons::{deselect_balloon, select_balloon};
 use context_menu::ContextAsk;
@@ -250,6 +251,10 @@ pub struct CanvasState {
     /// selection, and the document's own layout, which a view change replaces), so a still pointer
     /// doesn't lay the document out every frame. Set only while the page shows the preview.
     table_preview_layout: Option<(TablePreviewKey, wordcraft_doc::Document, wordcraft_engine::Selection, Arc<DocLayout>)>,
+    /// Active touch handle dragging for iPadOS touch text selection.
+    pub(crate) touch_handle_dragging: Option<touch_editing::TouchHandleKind>,
+    /// Active touch magnification loupe state.
+    pub(crate) touch_loupe: Option<touch_editing::TouchLoupeState>,
 }
 
 type TablePreviewKey = ((String, serde_json::Value, u64, u64, wordcraft_engine::Selection), Arc<DocLayout>);
@@ -445,6 +450,8 @@ impl Default for CanvasState {
             list_preview: None,
             preview_scroll: None,
             table_preview_layout: None,
+            touch_handle_dragging: None,
+            touch_loupe: None,
         }
     }
 }
@@ -845,9 +852,10 @@ fn show_pages(app: &mut WordApp, ui: &mut Ui, layout: &Arc<DocLayout>, full: Rec
                             let s = placed.scale as f32;
                             let top_left = placed.to_screen(Point::new(f64::from(c.x), f64::from(c.top)));
                             let r = Rect::from_min_size(top_left, vec2((c.width * s).max(2.0), c.height * s)).expand2(vec2(40.0, 60.0));
+                            let effective_max_y = body.rect.max.y - app.keyboard_inset_bottom;
                             fix.delta = (
                                 overshoot((r.min.x, r.max.x), (body.rect.min.x, body.rect.max.x)),
-                                overshoot((r.min.y, r.max.y), (body.rect.min.y, body.rect.max.y)),
+                                overshoot((r.min.y, r.max.y), (body.rect.min.y, effective_max_y)),
                             );
                         }
                         None => {
@@ -866,7 +874,17 @@ fn show_pages(app: &mut WordApp, ui: &mut Ui, layout: &Arc<DocLayout>, full: Rec
                 };
                 app.canvas.mini_anchor = crate::mini_toolbar::visible_anchor(anchor_rects, body.view.rect, crate::mini_toolbar::starts_rtl(app));
                 // The bar is its own floating layer: shown after the host, it keeps its buttons' presses (S-L410).
-                crate::mini_toolbar::show(app, ui, body);
+                if !app.input_mode.is_touch() {
+                    crate::mini_toolbar::show(app, ui, body);
+                } else {
+                    touch_editing::show_touch_selection_toolbar(app, ui, body);
+                }
+                touch_editing::show_touch_handles(app, ui, body);
+                touch_editing::show_touch_object_handles(app, ui, body);
+                if let Some(loupe) = app.canvas.touch_loupe.clone() {
+                    let screen_rect = ui.ctx().input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+                    touch_editing::paint_loupe(ui, &loupe, screen_rect);
+                }
             }
         });
     let caret = caret_after.or(caret);
@@ -884,8 +902,9 @@ fn show_pages(app: &mut WordApp, ui: &mut Ui, layout: &Arc<DocLayout>, full: Rec
         let s = rect.height() / page_h;
         let top_left = rect.min + vec2(c.x * s, c.top * s);
         let r = Rect::from_min_size(top_left, vec2((c.width * s).max(2.0), c.height * s)).expand2(vec2(40.0, 60.0));
+        let effective_max_y = body_rect.max.y - app.keyboard_inset_bottom;
         fix.delta =
-            (overshoot((r.min.x, r.max.x), (body_rect.min.x, body_rect.max.x)), overshoot((r.min.y, r.max.y), (body_rect.min.y, body_rect.max.y)));
+            (overshoot((r.min.x, r.max.x), (body_rect.min.x, body_rect.max.x)), overshoot((r.min.y, r.max.y), (body_rect.min.y, effective_max_y)));
         fix.go_to = None;
     }
     // A jump to a page that was not placed at all (`go_to`) puts the caret's line at the view's top edge: the follow

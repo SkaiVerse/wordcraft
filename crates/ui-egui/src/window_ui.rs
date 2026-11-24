@@ -218,6 +218,8 @@ impl WordApp {
             equation_symbol_set,
             md_source_visit,
             more_colors,
+            input_mode: _,
+            keyboard_inset_bottom: _,
         } = self;
         let Prefs {
             // App-wide: preferences, recent lists, and the settings the session owns while

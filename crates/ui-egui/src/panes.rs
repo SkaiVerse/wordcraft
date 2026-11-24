@@ -157,7 +157,7 @@ impl Pane {
 }
 
 /// Draws the body of `pane`. The pane area scrolls it, so no body brings a scroll area of its own.
-fn pane_body(app: &mut WordApp, ui: &mut Ui, pane: Pane) {
+pub(crate) fn pane_body(app: &mut WordApp, ui: &mut Ui, pane: Pane) {
     match pane {
         Pane::SmartArtText => crate::dialogs_smart_art::text_pane(app, ui),
         Pane::Navigation => nav(app, ui),

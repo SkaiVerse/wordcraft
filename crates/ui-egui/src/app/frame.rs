@@ -154,11 +154,22 @@ impl WordApp {
         if let Some(url) = self.canvas.open_url.take() {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
+        let screen_rect = ctx.input(|i| i.raw.screen_rect).unwrap_or_else(|| ui.clip_rect());
+        canvas::touch_editing::show_quick_format_bar(self, ui, screen_rect);
     }
 }
 
 /// The ribbon, then its keytips, in a top slot: the keytips read what the ribbon recorded this pass.
+/// When screen width is constrained (< 800pt in Split View / Stage Manager) or in touch mode,
+/// the ribbon is horizontally scrollable with touch swiping.
 fn ribbon_slot(app: &mut WordApp, ui: &mut egui::Ui) {
-    let out = ribbon::show(app, ui);
-    crate::keytips::show(ui, app, &out);
+    if ui.available_width() < 800.0 || app.input_mode.is_touch() {
+        egui::ScrollArea::horizontal().id_salt("ribbon_horizontal_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            let out = ribbon::show(app, ui);
+            crate::keytips::show(ui, app, &out);
+        });
+    } else {
+        let out = ribbon::show(app, ui);
+        crate::keytips::show(ui, app, &out);
+    }
 }

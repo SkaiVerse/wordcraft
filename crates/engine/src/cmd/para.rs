@@ -179,13 +179,13 @@ pub fn specs() -> Vec<CommandSpec> {
         .params(r#"{"level": 0-8}"#),
         CommandSpec::new("para.restartNumbering", "Restart at 1", "Home › Paragraph › Numbering", restart_numbering),
         CommandSpec::new("para.moveUp", "Move Paragraph Up", "Home › Paragraph", |s, _| move_paras(s, true))
-            .key(if cfg!(target_os = "macos") { "Ctrl+Shift+Up" } else { "Alt+Shift+Up" }),
+            .key(if cfg!(any(target_os = "macos", target_os = "ios")) { "Ctrl+Shift+Up" } else { "Alt+Shift+Up" }),
         CommandSpec::new("para.moveDown", "Move Paragraph Down", "Home › Paragraph", |s, _| move_paras(s, false))
-            .key(if cfg!(target_os = "macos") { "Ctrl+Shift+Down" } else { "Alt+Shift+Down" }),
+            .key(if cfg!(any(target_os = "macos", target_os = "ios")) { "Ctrl+Shift+Down" } else { "Alt+Shift+Down" }),
         CommandSpec::new("para.promote", "Promote", "Home › Paragraph", |s, _| outline_step(s, true))
-            .key(if cfg!(target_os = "macos") { "Ctrl+Shift+Left" } else { "Alt+Shift+Left" }),
+            .key(if cfg!(any(target_os = "macos", target_os = "ios")) { "Ctrl+Shift+Left" } else { "Alt+Shift+Left" }),
         CommandSpec::new("para.demote", "Demote", "Home › Paragraph", |s, _| outline_step(s, false))
-            .key(if cfg!(target_os = "macos") { "Ctrl+Shift+Right" } else { "Alt+Shift+Right" }),
+            .key(if cfg!(any(target_os = "macos", target_os = "ios")) { "Ctrl+Shift+Right" } else { "Alt+Shift+Right" }),
         CommandSpec::new("para.shading", "Shading", "Home › Paragraph", |s, v| {
             let c = p::str(v, "color").and_then(Rgb::parse);
             // Text selected within one paragraph is shaded itself, as in Word, so No Color takes

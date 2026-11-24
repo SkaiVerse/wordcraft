@@ -9146,6 +9146,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wordcraft-ios"
+version = "0.18.1"
+dependencies = [
+ "craft",
+ "egui",
+ "log",
+ "serde_json",
+ "wordcraft-doc",
+ "wordcraft-docx",
+ "wordcraft-engine",
+ "wordcraft-geom",
+ "wordcraft-ui-egui",
+]
+
+[[package]]
 name = "wordcraft-layout"
 version = "0.18.1"
 dependencies = [

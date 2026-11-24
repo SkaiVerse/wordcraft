@@ -114,7 +114,7 @@ pub fn registry() -> Registry {
 /// A shortcut that differs on macOS, where Word for Mac moves it (⌘Q quits, ⌘Space is
 /// Spotlight, ⌘⌥H hides other apps…): `mac` there, `other` everywhere else.
 pub const fn mac_or(mac: &'static str, other: &'static str) -> &'static str {
-    if cfg!(target_os = "macos") { mac } else { other }
+    if cfg!(any(target_os = "macos", target_os = "ios")) { mac } else { other }
 }
 
 /// A shortcut with no macOS equivalent (Option+letter types the character there).

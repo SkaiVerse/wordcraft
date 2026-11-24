@@ -2,33 +2,33 @@
 
 use crate::WordApp;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 use craft::ui::dialog::DialogResult;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 use craft::update::stack_dialogs::{CheckChoice, UpdateCheckDialog};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 use craft::update::updater::{Action, Status, Updater};
 
 /// What the update flow keeps between passes: the updater and whether the check at start is on.
 pub(crate) struct Runtime {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     updater: Updater,
     /// The desktop app turns the check at start on; tests and the web build leave it off.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     startup_check: bool,
     /// How many times the test stub answered a check (see `stub_update_check`).
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(test, not(target_arch = "wasm32"), not(target_os = "ios")))]
     pub(crate) stub_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Default for Runtime {
     fn default() -> Self {
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
             updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_translator(translate),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
             startup_check: false,
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(all(test, not(target_arch = "wasm32"), not(target_os = "ios")))]
             stub_calls: Default::default(),
         }
     }
@@ -36,14 +36,14 @@ impl Default for Runtime {
 
 /// The update prompt's words in the interface language: craft-update passes its English text and
 /// the values of its `{name}` placeholders each time it draws.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 fn translate(text: &str, args: &[(&str, &str)]) -> String {
     crate::i18n::fmt(crate::i18n::t(text), args)
 }
 
 impl WordApp {
     /// Whether the app asks for a newer release when it starts (off until the desktop app turns it on).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     pub fn set_startup_update_check(&mut self, on: bool) {
         self.updates_rt.startup_check = on;
     }
@@ -51,7 +51,7 @@ impl WordApp {
     /// Turns the self-update off for the rest of this process: no update is offered, and Help ▸
     /// Check for Updates says why. For a process that still carries another program's AppImage
     /// variables, which the update would take for this copy's file and replace (#5653).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     pub fn disable_self_update(&mut self) {
         let rt = &mut self.updates_rt;
         rt.startup_check = false;
@@ -60,7 +60,7 @@ impl WordApp {
 
     /// Answers every update check with "up to date" instead of asking GitHub, so a test's result
     /// doesn't depend on the network or its rate limit (#7463).
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(all(test, not(target_arch = "wasm32"), not(target_os = "ios")))]
     pub(crate) fn stub_update_check(&mut self) {
         let rt = &mut self.updates_rt;
         rt.startup_check = false;
@@ -75,7 +75,7 @@ impl WordApp {
     /// Starts the helper of an update that is ready, so that it installs once the process has
     /// ended. Call it once the exit is certain, before a path that ends the process without
     /// dropping the app. Later calls do nothing.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     pub fn start_pending_update(&mut self) {
         self.updates_rt.updater.start_pending_update();
     }
@@ -83,7 +83,7 @@ impl WordApp {
 
 /// A check for updates that never finds one and gives the reason as its error, which Help ▸ Check
 /// for Updates shows.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 fn refused_check() -> craft::update::updater::CheckSource {
     let why = tl!("Updates are off in this window: WordCraft was started with another program's AppImage settings. Start WordCraft from its own menu entry to update it.")
         .to_string();
@@ -92,9 +92,9 @@ fn refused_check() -> craft::update::updater::CheckSource {
 
 /// Help ▸ Check for Updates. The result dialog opens from [`run`] while the updater has a status.
 pub(crate) fn check(app: &mut WordApp) {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     app.updates_rt.updater.check_now();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
     {
         let alert =
             craft::ui::dialog::Alert::new(tl!("Check for Updates").to_string(), tl!("Update check is not supported in the web browser.").to_string());
@@ -104,7 +104,7 @@ pub(crate) fn check(app: &mut WordApp) {
 
 /// Once per frame, before the UI: the check at start, and the updater's own work.
 pub(crate) fn tick(app: &mut WordApp, ctx: &egui::Context) {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     {
         let rt = &mut app.updates_rt;
         if rt.startup_check {
@@ -112,13 +112,13 @@ pub(crate) fn tick(app: &mut WordApp, ctx: &egui::Context) {
         }
         rt.updater.tick(ctx);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
     let _ = (app, ctx);
 }
 
 /// Once per frame, before the dialog host runs: the updater's prompt and the check-result dialog.
 pub(crate) fn run(app: &mut WordApp) {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
     {
         // An update starts, and a ready one asks the app to close, only while no work is unsaved.
         let can_start = !(app.session.dirty || app.save_unconfirmed() || app.printing.busy() || crate::panes::has_comment_drafts(app));
@@ -138,14 +138,14 @@ pub(crate) fn run(app: &mut WordApp) {
         }
         sync_check_dialog(app, can_start);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "ios"))]
     let _ = app;
 }
 
 /// Shows the check-result dialog while the updater has a status (a manual check, or what the last
 /// update came to), acts on its answer, and withdraws it when an update was found: the prompt
 /// replaces it.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 fn sync_check_dialog(app: &mut WordApp, can_start: bool) {
     let ctx = app.ctx.clone();
     let rt = &mut app.updates_rt;

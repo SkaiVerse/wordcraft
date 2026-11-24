@@ -32,7 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("text.backTab", "Shift+Tab", "Editing", back_tab).key("Shift+Tab"),
         // A tab character even in a table cell, where Tab moves to the next cell (#3137); ⌥Tab on macOS.
         CommandSpec::new("text.insertTab", "Tab Character", "Editing", |s, _| ins_char(s, '\t'))
-            .key(if cfg!(target_os = "macos") { "Alt+Tab" } else { "Mod+Tab" }),
+            .key(if cfg!(any(target_os = "macos", target_os = "ios")) { "Alt+Tab" } else { "Mod+Tab" }),
         CommandSpec::new("text.backspace", "Backspace", "Editing", backspace).key("Backspace"),
         CommandSpec::new("text.delete", "Delete", "Editing", delete).key("Delete"),
         CommandSpec::new("text.deleteWordBack", "Delete Previous Word", "Editing", delete_word_back).key("Mod+Backspace / Alt+Backspace"),
@@ -42,7 +42,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("text.nbHyphen", "Nonbreaking Hyphen", "Insert › Symbols", |s, _| ins_char(s, NB_HYPHEN)).key("Mod+Shift+-"),
         CommandSpec::new("text.optionalHyphen", "Optional Hyphen", "Insert › Symbols", |s, _| ins_char(s, SOFT_HYPHEN)).key("Mod+-"),
         // Alt+X on Windows and Linux; macOS has no default (Option+X types a character there).
-        CommandSpec::new("text.toggleUnicode", "Toggle Unicode Character", "Editing", toggle_unicode).key(if cfg!(target_os = "macos") {
+        CommandSpec::new("text.toggleUnicode", "Toggle Unicode Character", "Editing", toggle_unicode).key(if cfg!(any(target_os = "macos", target_os = "ios")) {
             ""
         } else {
             "Alt+X"

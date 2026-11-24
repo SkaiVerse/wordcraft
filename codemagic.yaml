@@ -1,0 +1,36 @@
+workflows:
+  ios-unsigned-ipa:
+    name: Build iPadOS Unsigned IPA
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+        - pattern: 'ipad-port'
+          include: true
+    scripts:
+      - name: Install Rust and iOS target
+        script: |
+          set -e
+          if ! command -v rustup &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            source "$HOME/.cargo/env"
+          fi
+          rustup default stable
+          rustup target add aarch64-apple-ios
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Build Unsigned IPA
+        script: |
+          source "$HOME/.cargo/env" || true
+          chmod +x ios/build_unsigned_ipa.sh
+          ./ios/build_unsigned_ipa.sh
+    artifacts:
+      - build/WordCraft-unsigned.ipa

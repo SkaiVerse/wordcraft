@@ -1,0 +1,57 @@
+name: Build iPadOS Unsigned IPA
+
+on:
+  push:
+    branches: [main, ipad-port]
+  pull_request:
+    branches: [main, ipad-port]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-ipa:
+    name: Build Unsigned IPA
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cargo Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-ipa-${{ runner.os }}
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Select Xcode Version
+        run: |
+          sudo xcode-select -switch /Applications/Xcode_15.4.app || sudo xcode-select -switch /Applications/Xcode_16.app || true
+          xcodebuild -version
+
+      - name: Build Unsigned IPA
+        run: |
+          chmod +x ios/build_unsigned_ipa.sh
+          ./ios/build_unsigned_ipa.sh
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordCraft-unsigned-ipa
+          path: build/WordCraft-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
