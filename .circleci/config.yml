@@ -1,0 +1,65 @@
+version: 2.1
+
+jobs:
+  build-unsigned-ipa:
+    macos:
+      xcode: "26.1.1"
+    resource_class: m4pro.medium
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - cargo-ios-v1-{{ checksum "Cargo.lock" }}
+            - cargo-ios-v1-
+
+      - run:
+          name: Install Rust & iOS Target
+          command: |
+            if ! command -v cargo >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            fi
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            rustup target add aarch64-apple-ios
+
+      - run:
+          name: Install XcodeGen
+          command: brew install xcodegen
+
+      - run:
+          name: Build Unsigned iPadOS IPA
+          command: |
+            source "$BASH_ENV"
+            chmod +x ios/build_unsigned_ipa.sh
+            ./ios/build_unsigned_ipa.sh
+
+      - save_cache:
+          key: cargo-ios-v1-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo
+            - target
+
+      - run:
+          name: Prepare IPA Artifact
+          command: |
+            mkdir -p build/artifacts
+            IPA_FILE=$(find build -maxdepth 2 -name "*.ipa" | head -n 1)
+            if [ -z "$IPA_FILE" ]; then
+              echo "Error: No .ipa file found in build/"
+              exit 1
+            fi
+            cp "$IPA_FILE" build/artifacts/WordCraft-unsigned.ipa
+
+      - store_artifacts:
+          path: build/artifacts/WordCraft-unsigned.ipa
+          destination: WordCraft-unsigned.ipa
+
+workflows:
+  ios-ipa:
+    jobs:
+      - build-unsigned-ipa:
+          filters:
+            branches:
+              only:
+                - ipad-port
