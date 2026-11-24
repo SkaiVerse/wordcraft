@@ -27,12 +27,14 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
           - $(PROJECT_DIR)/../target/aarch64-apple-ios/release
+          - $(PROJECT_DIR)/../target/aarch64-apple-ios/debug
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(PROJECT_DIR)/../crates/wordcraft-ios/include
         OTHER_LDFLAGS:
           - $(inherited)
           - -ObjC
+          - -lwordcraft
         ENABLE_BITCODE: NO
         CODE_SIGN_STYLE: Manual
         CODE_SIGNING_ALLOWED: NO
@@ -48,4 +50,4 @@ targets:
       - sdk: CoreText.framework
       - sdk: Security.framework
       - sdk: AudioToolbox.framework
-      - file: ../target/aarch64-apple-ios/release/libwordcraft.a
+      - sdk: libresolv.tbd
