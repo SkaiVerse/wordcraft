@@ -1,100 +1,58 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// Handles native iPadOS Files picker presentation (`UIDocumentPickerViewController`) for
-/// opening, saving, and exporting documents from iCloud Drive, On My iPad, and external drives,
-/// managing security-scoped resource URLs across read/write operations.
+/// Handles native iPadOS Files picker presentation (`UIDocumentPickerViewController`) using
+/// sandbox-safe copy/export flows so Open, Save, Save As, Export PDF/PNG, and Insert Picture
+/// work reliably under iCloud Drive, On My iPad, USB drives, and third-party providers.
 class DocumentPickerManager: NSObject, UIDocumentPickerDelegate {
-    private weak var hostPtr: AnyObject?
     private var rawHost: OpaquePointer?
     private var activePickId: UInt64?
+    private var activeIsSave: Bool = false
+    private var activeSaveName: String = "Document.docx"
     private var pendingTempExportURL: URL?
-    private var securityScopedURLs: [String: URL] = [:]
 
-    deinit {
-        releaseAllSecurityScopes()
-    }
-
-    func releaseAllSecurityScopes() {
-        for (_, url) in securityScopedURLs {
-            url.stopAccessingSecurityScopedResource()
-        }
-        securityScopedURLs.removeAll()
-    }
-
-    /// Presents a native `UIDocumentPickerViewController` driven by a Rust `file.pick` platform action.
+    /// Presents a native `UIDocumentPickerViewController` driven by a Rust `file.pick` or `file.save_bytes` action.
     func presentPickRequest(host: OpaquePointer, json: [String: Any], from presenter: UIViewController) {
         self.rawHost = host
         let pickId = (json["pick_id"] as? NSNumber)?.uint64Value ?? 0
-        let kind = (json["kind"] as? String) ?? "open"
-        let fileName = (json["file_name"] as? String) ?? "Document.docx"
-        let exts = (json["extensions"] as? [String]) ?? []
+        let action = (json["action"] as? String) ?? "file.pick"
 
-        // If another picker is somehow still registered, cancel it cleanly first.
         if let prevId = activePickId {
             activePickId = nil
-            wordcraft_complete_file_pick(host, prevId, nil)
+            if activeIsSave {
+                wordcraft_complete_file_save(host, prevId, false, nil)
+            } else {
+                wordcraft_finish_open_pick(host, prevId)
+            }
         }
         activePickId = pickId
 
-        if kind == "save" {
-            let safeName = fileName.isEmpty ? "Document.docx" : fileName
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
-            try? FileManager.default.removeItem(at: tempURL)
+        if action == "file.save_bytes" {
+            let fileName = (json["file_name"] as? String) ?? "Document.docx"
+            let stagingPath = (json["staging_path"] as? String) ?? ""
+            let stagingURL = URL(fileURLWithPath: stagingPath)
 
-            // Provide valid initial DOCX payload when saving a Word document so Files previews cleanly;
-            // Rust overwrites the final destination with the exact target format once chosen.
-            if safeName.lowercased().hasSuffix(".docx") {
-                var len: Int = 0
-                if let ptr = wordcraft_get_document_bytes(host, &len) {
-                    let data = Data(bytes: ptr, count: len)
-                    wordcraft_free_bytes(ptr, len)
-                    try? data.write(to: tempURL)
-                } else {
-                    FileManager.default.createFile(atPath: tempURL.path, contents: Data())
-                }
-            } else {
-                FileManager.default.createFile(atPath: tempURL.path, contents: Data())
-            }
+            activeIsSave = true
+            activeSaveName = fileName
+            pendingTempExportURL = stagingURL
 
-            pendingTempExportURL = tempURL
-            let picker = UIDocumentPickerViewController(forExporting: [tempURL], asCopy: false)
+            let picker = UIDocumentPickerViewController(forExporting: [stagingURL], asCopy: true)
             picker.delegate = self
             picker.shouldShowFileExtensions = true
             presenter.present(picker, animated: true)
             return
         }
 
-        let types: [UTType]
-        if kind == "folder" {
-            types = [.folder]
-        } else {
-            types = Self.resolveContentTypes(for: exts)
-        }
+        let kind = (json["kind"] as? String) ?? "open"
+        activeIsSave = false
+        pendingTempExportURL = nil
 
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
+        let types: [UTType] = (kind == "folder") ? [.folder] : [.item]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.delegate = self
         picker.allowsMultipleSelection = (kind == "open_many")
         picker.shouldShowFileExtensions = true
         presenter.present(picker, animated: true)
-    }
-
-    private static func resolveContentTypes(for extensions: [String]) -> [UTType] {
-        var resolved: [UTType] = []
-        for ext in extensions {
-            let clean = ext.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            if clean.isEmpty || clean == "*" {
-                return [.item]
-            }
-            if let ut = UTType(filenameExtension: clean) {
-                resolved.append(ut)
-            }
-        }
-        if resolved.isEmpty {
-            let docx = UTType(filenameExtension: "docx") ?? .data
-            return [docx, .plainText, .pdf, .rtf, .image, .item]
-        }
-        return resolved
     }
 
     // MARK: - UIDocumentPickerDelegate
@@ -103,37 +61,67 @@ class DocumentPickerManager: NSObject, UIDocumentPickerDelegate {
         defer { cleanupPendingTemp() }
         guard let host = rawHost else { return }
 
-        var chosenPaths: [String] = []
-        for url in urls {
-            if url.startAccessingSecurityScopedResource() {
-                securityScopedURLs[url.path] = url
+        if activeIsSave {
+            if let pickId = activePickId {
+                let name = activeSaveName
+                activePickId = nil
+                activeIsSave = false
+                name.withCString { cName in
+                    wordcraft_complete_file_save(host, pickId, true, cName)
+                }
             }
-            chosenPaths.append(url.path)
+            return
         }
 
         if let pickId = activePickId {
             activePickId = nil
-            if let data = try? JSONSerialization.data(withJSONObject: chosenPaths),
-               let jsonStr = String(data: data, encoding: .utf8) {
-                jsonStr.withCString { cStr in
-                    wordcraft_complete_file_pick(host, pickId, cStr)
+            for url in urls {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scoped {
+                        url.stopAccessingSecurityScopedResource()
+                    }
                 }
-            } else {
-                wordcraft_complete_file_pick(host, pickId, nil)
+                if let data = try? Data(contentsOf: url) {
+                    let name = url.lastPathComponent
+                    name.withCString { cName in
+                        data.withUnsafeBytes { rawBuf in
+                            if let ptr = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                                wordcraft_push_picked_file_bytes(host, pickId, cName, ptr, data.count)
+                            }
+                        }
+                    }
+                }
             }
+            wordcraft_finish_open_pick(host, pickId)
         } else if let first = urls.first {
-            // Direct OS launch / external open
-            first.path.withCString { cPath in
-                _ = wordcraft_open_document_path(host, cPath)
+            let scoped = first.startAccessingSecurityScopedResource()
+            defer {
+                if scoped {
+                    first.stopAccessingSecurityScopedResource()
+                }
+            }
+            if let data = try? Data(contentsOf: first) {
+                first.lastPathComponent.withCString { cName in
+                    data.withUnsafeBytes { rawBuf in
+                        if let ptr = rawBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                            _ = wordcraft_open_document_bytes(host, cName, ptr, data.count)
+                        }
+                    }
+                }
             }
         }
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         cleanupPendingTemp()
-        if let host = rawHost, let pickId = activePickId {
-            activePickId = nil
-            wordcraft_complete_file_pick(host, pickId, nil)
+        guard let host = rawHost, let pickId = activePickId else { return }
+        activePickId = nil
+        if activeIsSave {
+            activeIsSave = false
+            wordcraft_complete_file_save(host, pickId, false, nil)
+        } else {
+            wordcraft_finish_open_pick(host, pickId)
         }
     }
 

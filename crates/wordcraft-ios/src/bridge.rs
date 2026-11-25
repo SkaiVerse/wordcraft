@@ -4,7 +4,7 @@ use crate::clipboard::IosClipboard;
 use crate::files::IosFiles;
 use crate::input::{InputModeTracker, PointerType, TouchGesture, TouchPhase};
 use crate::surface::MetalSurface;
-use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, TouchDeviceId, TouchId, Vec2};
+use egui::{Event, ImeEvent, Key, Modifiers, PointerButton, Pos2, RawInput, TouchDeviceId, TouchId, Vec2};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -22,8 +22,10 @@ pub struct WordCraftHost {
     pub files: IosFiles,
     pub clipboard: IosClipboard,
     pub raw_input: RawInput,
+    pub delayed_events: Vec<Event>,
     pub current_modifiers: Modifiers,
     pub pending_actions: VecDeque<Value>,
+    pub floating_cursor_accum: (f32, f32),
     pub safe_insets: [f32; 4], // [top, bottom, left, right]
     pub keyboard_height: f32,
     pub frame_counter: u64,
@@ -36,6 +38,7 @@ impl WordCraftHost {
         let scale = if scale > 0.0 { scale } else { 2.0 };
         let egui_ctx = egui::Context::default();
         egui_ctx.set_pixels_per_point(scale);
+        egui_ctx.set_os(egui::os::OperatingSystem::Mac);
 
         let files = IosFiles::new();
         let clipboard = IosClipboard::new();
@@ -84,8 +87,10 @@ impl WordCraftHost {
             files,
             clipboard,
             raw_input,
+            delayed_events: Vec::new(),
             current_modifiers: Modifiers::NONE,
             pending_actions: VecDeque::new(),
+            floating_cursor_accum: (0.0, 0.0),
             safe_insets: [0.0; 4],
             keyboard_height: 0.0,
             frame_counter: 0,
@@ -109,7 +114,32 @@ impl WordCraftHost {
         self.app.set_keyboard_inset_bottom(self.keyboard_height);
     }
 
-    /// Dispatches a touch event from UIKit and processes gestures.
+    /// Updates hover pointer position (keeps `pointer_hover_pos()` active for scroll & menus).
+    pub fn send_hover(&mut self, x: f32, y: f32) {
+        self.raw_input.events.push(Event::PointerMoved(Pos2::new(x, y)));
+    }
+
+    /// Clears hover pointer position when touch pan/glide ends.
+    pub fn send_hover_gone(&mut self) {
+        self.raw_input.events.push(Event::PointerGone);
+    }
+
+    /// Delivers a quick touch tap split across two frames (`press` now, `release` next frame)
+    /// so canvas text placement and every button/panel tool responds reliably.
+    pub fn send_touch_tap(&mut self, x: f32, y: f32) {
+        let now_ms = self.start_time.elapsed().as_millis() as u64;
+        let _ = self.tracker.on_touch(TouchPhase::Began, x, y, 0, PointerType::DirectTouch, now_ms);
+        let (mode, _, _) = self.tracker.on_touch(TouchPhase::Ended, x, y, 0, PointerType::DirectTouch, now_ms + 10);
+        self.app.set_input_mode(mode);
+
+        let pos = Pos2::new(x, y);
+        self.raw_input.events.push(Event::PointerMoved(pos));
+        self.raw_input.events.push(Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: self.current_modifiers });
+        self.delayed_events.push(Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: self.current_modifiers });
+        self.delayed_events.push(Event::PointerGone);
+    }
+
+    /// Dispatches an immediate touch event from UIKit (Apple Pencil, handle drags, multi-touch).
     pub fn send_touch(&mut self, phase: TouchPhase, x: f32, y: f32, touch_id: u64, force: f32, pointer_type: PointerType) {
         let now_ms = self.start_time.elapsed().as_millis() as u64;
         let (mode, gesture, is_rejected_palm) = self.tracker.on_touch(phase, x, y, touch_id, pointer_type, now_ms);
@@ -119,7 +149,6 @@ impl WordCraftHost {
             return;
         }
 
-        // Process recognized high-level multi-touch gestures
         match gesture {
             TouchGesture::Pinch { scale_factor, scroll_delta } => {
                 if (scale_factor - 1.0).abs() > 0.01 {
@@ -133,7 +162,7 @@ impl WordCraftHost {
                         delta: Vec2::new(scroll_delta.0, scroll_delta.1),
                         modifiers: Modifiers::default(),
                         phase: egui::TouchPhase::Move,
-                        source: egui::MouseWheelSource::Unknown,
+                        source: egui::MouseWheelSource::Trackpad,
                     });
                 }
             }
@@ -155,11 +184,14 @@ impl WordCraftHost {
             TouchPhase::Stationary => return,
         };
 
-        self.raw_input.events.push(Event::Touch { device_id: TouchDeviceId(0), id: TouchId(touch_id), phase: touch_phase, pos, force: Some(force) });
+        self.raw_input.events.push(Event::Touch {
+            device_id: TouchDeviceId(if pointer_type == PointerType::ApplePencil { 1 } else { 2 }),
+            id: TouchId(touch_id),
+            phase: touch_phase,
+            pos,
+            force: Some(force),
+        });
 
-        // Deliver primary pointer event for standard egui button/canvas interaction.
-        // When UIKit cancels a touch (e.g., because UIScroll/UIPan took over for 1-finger scroll),
-        // clear active canvas text selection drag so scrolling never leaves unwanted text selected.
         match phase {
             TouchPhase::Began => {
                 self.raw_input.events.push(Event::PointerMoved(pos));
@@ -184,7 +216,12 @@ impl WordCraftHost {
             }
             TouchPhase::Cancelled => {
                 self.app.cancel_touch_drag();
-                self.raw_input.events.push(Event::PointerGone);
+                self.raw_input.events.push(Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: self.current_modifiers,
+                });
             }
             TouchPhase::Stationary => {}
         }
@@ -199,8 +236,10 @@ impl WordCraftHost {
         }
     }
 
-    /// Triggers inertial touch scrolling directly from UIKit `UIPanGestureRecognizer`.
-    pub fn send_pan_gesture(&mut self, dx: f32, dy: f32) {
+    /// Triggers touch pan scrolling at `(x, y)` (ensuring `pointer_hover_pos()` stays over the target
+    /// widget so `PageView` and `egui::ScrollArea` both receive `MouseWheel`).
+    pub fn send_pan_gesture_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.raw_input.events.push(Event::PointerMoved(Pos2::new(x, y)));
         self.raw_input.events.push(Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             delta: Vec2::new(dx, dy),
@@ -263,7 +302,10 @@ impl WordCraftHost {
         self.app.set_input_mode(mode);
 
         let egui_modifiers = decode_modifiers(modifiers);
-        self.current_modifiers = egui_modifiers;
+        if egui_modifiers != self.current_modifiers {
+            self.current_modifiers = egui_modifiers;
+            self.raw_input.events.push(Event::ModifiersChanged(egui_modifiers));
+        }
 
         if let Some(key) = map_key_code(key_code) {
             self.raw_input.events.push(Event::Key { key, physical_key: Some(key), pressed: is_down, repeat: false, modifiers: egui_modifiers });
@@ -283,10 +325,34 @@ impl WordCraftHost {
         }
     }
 
-    /// Sends a Backspace press+release (for UIKeyInput.deleteBackward).
+    /// Sends a Backspace press+release across frames cleanly (for `UIKeyInput.deleteBackward`).
     pub fn send_backspace(&mut self) {
         self.send_key(42, 0, true, None);
-        self.send_key(42, 0, false, None);
+        self.delayed_events.push(Event::Key {
+            key: Key::Backspace,
+            physical_key: Some(Key::Backspace),
+            pressed: false,
+            repeat: false,
+            modifiers: self.current_modifiers,
+        });
+    }
+
+    /// Sends `Event::Ime(ImeEvent::Preedit { .. })` for inline keyboard/Swipe/CJK composition.
+    pub fn ime_set_marked_text(&mut self, text: &str, sel_start: i32, sel_end: i32) {
+        let _ = self.app.canvas.focus_page(&self.egui_ctx);
+        let range = if sel_start >= 0 && sel_end >= sel_start { Some(sel_start as usize..sel_end as usize) } else { None };
+        self.raw_input.events.push(Event::Ime(ImeEvent::Preedit { text: text.to_string(), active_range_chars: range }));
+    }
+
+    /// Commits marked text or clears active IME preedit.
+    pub fn ime_unmark_text(&mut self, text: Option<&str>) {
+        if let Some(t) = text
+            && !t.is_empty()
+        {
+            self.raw_input.events.push(Event::Ime(ImeEvent::Commit(t.to_string())));
+        } else {
+            self.raw_input.events.push(Event::Ime(ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
+        }
     }
 
     /// Renders one complete frame of WordCraft.
@@ -313,6 +379,11 @@ impl WordCraftHost {
             app_ref.ui(ui);
         });
 
+        // Move any delayed release events (tap up, etc.) into the next frame's queue.
+        if !self.delayed_events.is_empty() {
+            self.raw_input.events.append(&mut self.delayed_events);
+        }
+
         // If the virtual keyboard accessory bar dismiss button ("⌨ ▾") zeroed `keyboard_inset_bottom`
         // while UIKit still reported an active keyboard, tell UIKit to resign first responder.
         if self.keyboard_height > 0.0 && self.app.keyboard_inset_bottom <= 0.0 {
@@ -325,10 +396,25 @@ impl WordCraftHost {
         self.surface.render(pixels_per_point, &full_output.textures_delta, &clipped_primitives);
     }
 
-    /// Pops the next queued UIKit platform action (file picker, clipboard write, keyboard dismiss).
+    /// Pops the next queued UIKit platform action (file picker, pasteboard write, keyboard dismiss).
     pub fn poll_platform_action(&mut self) -> Option<String> {
         let action = self.files.pop_action().or_else(|| self.clipboard.pop_action()).or_else(|| self.pending_actions.pop_front());
         action.map(|v| v.to_string())
+    }
+
+    /// Pushes one picked file's bytes from `UIDocumentPickerViewController`.
+    pub fn push_picked_file_bytes(&self, pick_id: u64, name: &str, bytes: Vec<u8>) {
+        self.files.push_opened_file_bytes(pick_id, name, bytes);
+    }
+
+    /// Finalizes a pending open file picker ticket after all files are pushed.
+    pub fn finish_open_pick(&self, pick_id: u64) {
+        self.files.finish_open_pick(pick_id);
+    }
+
+    /// Completes a pending export/save sheet ticket.
+    pub fn complete_file_save(&self, pick_id: u64, saved: bool, name: Option<&str>) {
+        self.files.complete_save_pick(pick_id, saved, name);
     }
 
     /// Completes a pending iOS file picker ticket with picked path(s).
@@ -361,9 +447,56 @@ impl WordCraftHost {
         self.app.is_touch_drag_active()
     }
 
+    /// Whether `(x, y)` hits an interactive handle / active drag target.
+    pub fn is_near_touch_target(&mut self, x: f32, y: f32) -> bool {
+        self.app.is_near_touch_target(x, y)
+    }
+
     /// Whether `(x, y)` lies on the editable document canvas (and no modal/backstage covers it).
     pub fn is_point_in_canvas(&self, x: f32, y: f32) -> bool {
         self.app.is_point_in_canvas(x, y)
+    }
+
+    /// Returns JSON snapshot for UIKit `UITextInput` (text, UTF-16 selection, caret rect, keyboard flag).
+    pub fn get_ime_state_json(&mut self) -> String {
+        self.app.ime_visible_snapshot().to_string()
+    }
+
+    /// Updates selection via UTF-16 offsets in the current paragraph window.
+    pub fn ime_set_selection(&mut self, start_utf16: usize, end_utf16: usize) -> bool {
+        self.app.ime_set_utf16_selection(start_utf16, end_utf16)
+    }
+
+    /// Replaces `[start_utf16, end_utf16]` with `text`.
+    pub fn ime_replace_range(&mut self, start_utf16: usize, end_utf16: usize, text: &str) -> bool {
+        self.app.ime_replace_utf16_range(start_utf16, end_utf16, text)
+    }
+
+    /// Moves the caret smoothly during Apple Virtual Keyboard Spacebar Floating Cursor drag.
+    pub fn ime_move_caret_by_delta(&mut self, dx: f32, dy: f32, extend: bool) -> bool {
+        let Some([cx, cy, _, ch]) = self.app.caret_screen_rect() else {
+            return false;
+        };
+        self.floating_cursor_accum.0 += dx;
+        self.floating_cursor_accum.1 += dy;
+        let tx = cx + self.floating_cursor_accum.0;
+        let ty = cy + ch * 0.5 + self.floating_cursor_accum.1;
+        if self.app.move_caret_to_screen_point(tx, ty, extend) {
+            self.floating_cursor_accum = (0.0, 0.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resets floating cursor residual accumulator at start/end of spacebar drag.
+    pub fn ime_reset_floating_cursor(&mut self) {
+        self.floating_cursor_accum = (0.0, 0.0);
+    }
+
+    /// Returns UTF-16 offset nearest `(x, y)` inside active paragraph (`-1` if outside).
+    pub fn ime_offset_at_point(&mut self, x: f32, y: f32) -> i32 {
+        self.app.ime_utf16_offset_at_point(x, y).map_or(-1, |u| u as i32)
     }
 
     /// Dispatches a command through WordCraft's central command registry.
@@ -382,7 +515,7 @@ impl WordCraftHost {
         wordcraft_docx::write(&self.app.session.doc).map_err(|e| e.to_string())
     }
 
-    /// Opens a document directly by file system path (e.g. from security-scoped UIDocumentPicker).
+    /// Opens a document directly by file system path.
     pub fn open_document_path(&mut self, path: &str) -> Result<(), String> {
         self.app.open_from_platform(path, None).map(|_| ())
     }
@@ -441,7 +574,7 @@ impl WordCraftHost {
         let pos = Pos2::new(x, y);
         self.raw_input.events.push(Event::PointerMoved(pos));
         self.raw_input.events.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, modifiers: self.current_modifiers });
-        self.raw_input.events.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers: self.current_modifiers });
+        self.delayed_events.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers: self.current_modifiers });
     }
 
     /// Returns a JSON-formatted list of core commands registered with keyboard shortcuts
@@ -484,12 +617,10 @@ pub fn decode_modifiers(modifiers: u32) -> Modifiers {
 /// Maps USB HID Usage codes (`UIKeyboardHIDUsage` from Apple `UIKey.keyCode`) to `egui::Key`.
 pub fn map_key_code(code: i32) -> Option<Key> {
     match code {
-        // Letters A-Z (USB HID Usage 0x04..=0x1D)
         4..=29 => {
             let ch = (b'A' + (code - 4) as u8) as char;
             Key::from_name(&ch.to_string())
         }
-        // Digits 1-9, 0 (USB HID Usage 0x1E..=0x27)
         30 => Some(Key::Num1),
         31 => Some(Key::Num2),
         32 => Some(Key::Num3),
@@ -500,13 +631,11 @@ pub fn map_key_code(code: i32) -> Option<Key> {
         37 => Some(Key::Num8),
         38 => Some(Key::Num9),
         39 => Some(Key::Num0),
-        // Core control keys (USB HID Usage 0x28..=0x2C)
         40 | 88 => Some(Key::Enter),
         41 => Some(Key::Escape),
         42 => Some(Key::Backspace),
         43 => Some(Key::Tab),
         44 => Some(Key::Space),
-        // Punctuation (USB HID Usage 0x2D..=0x38)
         45 => Some(Key::Minus),
         46 => Some(Key::Equals),
         47 => Some(Key::OpenBracket),
@@ -518,7 +647,6 @@ pub fn map_key_code(code: i32) -> Option<Key> {
         54 => Some(Key::Comma),
         55 => Some(Key::Period),
         56 => Some(Key::Slash),
-        // Function keys F1-F12 (USB HID Usage 0x3A..=0x45)
         58 => Some(Key::F1),
         59 => Some(Key::F2),
         60 => Some(Key::F3),
@@ -531,7 +659,6 @@ pub fn map_key_code(code: i32) -> Option<Key> {
         67 => Some(Key::F10),
         68 => Some(Key::F11),
         69 => Some(Key::F12),
-        // Navigation & editing keys (USB HID Usage 0x49..=0x52)
         73 => Some(Key::Insert),
         74 => Some(Key::Home),
         75 => Some(Key::PageUp),

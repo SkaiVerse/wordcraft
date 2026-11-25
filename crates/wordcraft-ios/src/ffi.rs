@@ -277,15 +277,51 @@ pub unsafe extern "C" fn wordcraft_send_pinch_gesture(host: *mut WordCraftHost, 
     }
 }
 
-/// Forwards an inertial touch scroll delta (`UIPanGestureRecognizer`).
+/// Forwards an inertial touch scroll delta at `(x, y)` keeping pointer hover alive over the scrolled target.
 ///
 /// # Safety
 /// `host` must be null or a valid mutable `WordCraftHost` pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wordcraft_send_pan_gesture(host: *mut WordCraftHost, dx: f32, dy: f32) {
+pub unsafe extern "C" fn wordcraft_send_pan_gesture(host: *mut WordCraftHost, x: f32, y: f32, dx: f32, dy: f32) {
     // SAFETY: Caller guarantees `host` is valid when non-null.
     if let Some(host) = unsafe { host.as_mut() } {
-        host.send_pan_gesture(dx, dy);
+        host.send_pan_gesture_at(x, y, dx, dy);
+    }
+}
+
+/// Updates pointer hover position `(x, y)` without pressing.
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_send_hover(host: *mut WordCraftHost, x: f32, y: f32) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.send_hover(x, y);
+    }
+}
+
+/// Sends `PointerGone` when a touch pan / inertial glide ends.
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_send_hover_gone(host: *mut WordCraftHost) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.send_hover_gone();
+    }
+}
+
+/// Sends a clean primary tap split across press (this frame) and release (next frame).
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_send_tap(host: *mut WordCraftHost, x: f32, y: f32) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.send_touch_tap(x, y);
     }
 }
 
@@ -313,7 +349,7 @@ pub unsafe extern "C" fn wordcraft_send_three_finger_swipe(host: *mut WordCraftH
     }
 }
 
-/// Dispatches a secondary click (context menu) at (x, y) for two-finger tap or long-press.
+/// Dispatches a secondary click (context menu) at (x, y) for long-press or two-finger tap.
 ///
 /// # Safety
 /// `host` must be null or a valid mutable `WordCraftHost` pointer.
@@ -341,7 +377,7 @@ pub unsafe extern "C" fn wordcraft_get_key_commands_json(host: *mut WordCraftHos
     }
 }
 
-/// Opens a document by file path (e.g. from security-scoped UIDocumentPicker).
+/// Opens a document by file path.
 ///
 /// # Safety
 /// `host` and `path` must be valid pointers, with `path` NUL-terminated UTF-8.
@@ -432,6 +468,106 @@ pub unsafe extern "C" fn wordcraft_send_backspace(host: *mut WordCraftHost) {
     }
 }
 
+/// Returns JSON snapshot for `UITextInput` (text, UTF-16 selection, caret rect). Free with `wordcraft_free_string`.
+///
+/// # Safety
+/// `host` must be null or a valid `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_get_ime_state_json(host: *mut WordCraftHost) -> *mut c_char {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        CString::new(host.get_ime_state_json()).map_or(std::ptr::null_mut(), CString::into_raw)
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// Updates WordCraft's selection via UTF-16 offsets in the current paragraph (`UITextInput.selectedTextRange`).
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_set_selection(host: *mut WordCraftHost, start_utf16: usize, end_utf16: usize) -> i32 {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } { if host.ime_set_selection(start_utf16, end_utf16) { 1 } else { 0 } } else { 0 }
+}
+
+/// Replaces a UTF-16 range `[start_utf16, end_utf16]` inside the active paragraph with `text`.
+///
+/// # Safety
+/// `host` and `text` must be valid pointers, with `text` NUL-terminated UTF-8 when non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_replace_range(host: *mut WordCraftHost, start_utf16: usize, end_utf16: usize, text: *const c_char) -> i32 {
+    let Some(host) = (unsafe { host.as_mut() }) else {
+        return 0;
+    };
+    let text_str = if !text.is_null() {
+        // SAFETY: Caller guarantees `text` is a valid C string.
+        unsafe { CStr::from_ptr(text).to_str() }.unwrap_or("")
+    } else {
+        ""
+    };
+    if host.ime_replace_range(start_utf16, end_utf16, text_str) { 1 } else { 0 }
+}
+
+/// Moves the caret during Apple Virtual Keyboard Spacebar Floating Cursor drag.
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_move_caret_by_delta(host: *mut WordCraftHost, dx: f32, dy: f32, extend: bool) -> i32 {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } { if host.ime_move_caret_by_delta(dx, dy, extend) { 1 } else { 0 } } else { 0 }
+}
+
+/// Resets floating cursor residual accumulator at start/end of spacebar trackpad gesture.
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_reset_floating_cursor(host: *mut WordCraftHost) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.ime_reset_floating_cursor();
+    }
+}
+
+/// Returns the UTF-16 offset nearest `(x, y)` inside the active paragraph, or `-1`.
+///
+/// # Safety
+/// `host` must be null or a valid `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_offset_at_point(host: *mut WordCraftHost, x: f32, y: f32) -> i32 {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } { host.ime_offset_at_point(x, y) } else { -1 }
+}
+
+/// Sets inline marked text (`Event::Ime(ImeEvent::Preedit)`).
+///
+/// # Safety
+/// `host` must be valid and `text` must be null or NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_set_marked_text(host: *mut WordCraftHost, text: *const c_char, sel_start: i32, sel_end: i32) {
+    let Some(host) = (unsafe { host.as_mut() }) else {
+        return;
+    };
+    let text_str = if !text.is_null() { unsafe { CStr::from_ptr(text).to_str() }.unwrap_or("") } else { "" };
+    host.ime_set_marked_text(text_str, sel_start, sel_end);
+}
+
+/// Commits marked text or clears active IME preedit.
+///
+/// # Safety
+/// `host` must be valid and `text` must be null or NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_ime_unmark_text(host: *mut WordCraftHost, text: *const c_char) {
+    let Some(host) = (unsafe { host.as_mut() }) else {
+        return;
+    };
+    let text_opt = if !text.is_null() { unsafe { CStr::from_ptr(text).to_str().ok() } } else { None };
+    host.ime_unmark_text(text_opt);
+}
+
 /// Polls the next queued platform action (file picker, pasteboard write, keyboard hide) as JSON.
 /// Returns NULL when idle; non-null strings MUST be freed with `wordcraft_free_string`.
 ///
@@ -448,6 +584,50 @@ pub unsafe extern "C" fn wordcraft_poll_platform_action(host: *mut WordCraftHost
     } else {
         std::ptr::null_mut()
     }
+}
+
+/// Appends one opened file's name and bytes from UIKit `UIDocumentPickerViewController`.
+///
+/// # Safety
+/// `host` must be valid, `name` must be valid UTF-8 C string, and `bytes` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_push_picked_file_bytes(host: *mut WordCraftHost, pick_id: u64, name: *const c_char, bytes: *const u8, len: usize) {
+    if host.is_null() || name.is_null() || bytes.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees valid pointers and `len` readable bytes.
+    let host = unsafe { &*host };
+    let Ok(name_str) = (unsafe { CStr::from_ptr(name).to_str() }) else {
+        return;
+    };
+    let slice = unsafe { std::slice::from_raw_parts(bytes, len) };
+    host.push_picked_file_bytes(pick_id, name_str, slice.to_vec());
+}
+
+/// Finalizes a pending `open` / `open_many` picker ticket after all files are pushed (0 files = cancel).
+///
+/// # Safety
+/// `host` must be null or a valid `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_finish_open_pick(host: *mut WordCraftHost, pick_id: u64) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_ref() } {
+        host.finish_open_pick(pick_id);
+    }
+}
+
+/// Completes a pending `file.save_bytes` export sheet (`saved = true` -> Downloaded, `false` -> Cancelled).
+///
+/// # Safety
+/// `host` must be null or valid; `name` must be null or NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_complete_file_save(host: *mut WordCraftHost, pick_id: u64, saved: bool, name: *const c_char) {
+    // SAFETY: Caller guarantees valid pointers for this call.
+    let Some(host) = (unsafe { host.as_ref() }) else {
+        return;
+    };
+    let name_opt = if !name.is_null() { unsafe { CStr::from_ptr(name).to_str().ok() } } else { None };
+    host.complete_file_save(pick_id, saved, name_opt);
 }
 
 /// Completes a pending `file.pick` request from UIKit (`paths_json` is a JSON array of strings, or NULL for cancel).
@@ -525,6 +705,16 @@ pub unsafe extern "C" fn wordcraft_register_font_bytes(host: *mut WordCraftHost,
 pub unsafe extern "C" fn wordcraft_is_touch_drag_active(host: *mut WordCraftHost) -> i32 {
     // SAFETY: Caller guarantees `host` is valid when non-null.
     if let Some(host) = unsafe { host.as_ref() } { if host.is_touch_drag_active() { 1 } else { 0 } } else { 0 }
+}
+
+/// Returns 1 if `(x, y)` hits a touch drag target (caret teardrop, selection handle, object corner).
+///
+/// # Safety
+/// `host` must be null or a valid `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_is_near_touch_target(host: *mut WordCraftHost, x: f32, y: f32) -> i32 {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } { if host.is_near_touch_target(x, y) { 1 } else { 0 } } else { 0 }
 }
 
 /// Returns 1 if `(x, y)` is inside the editable document canvas (no modal/backstage open).

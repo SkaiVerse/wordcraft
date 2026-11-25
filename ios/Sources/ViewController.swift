@@ -120,7 +120,7 @@ class ViewController: UIViewController {
               let action = dict["action"] as? String else { return }
 
         switch action {
-        case "file.pick":
+        case "file.pick", "file.save_bytes":
             documentPicker.presentPickRequest(host: host, json: dict, from: self)
         case "clipboard.set":
             let text = (dict["text"] as? String) ?? ""

@@ -239,6 +239,225 @@ impl WordApp {
         !self.ui.backstage && !self.modal_open() && self.canvas.contains(egui::pos2(x, y))
     }
 
+    /// Whether `(x, y)` is currently near an interactive touch drag handle (caret/selection teardrop
+    /// or selected object corner) so finger pan gestures should yield to handle dragging.
+    pub fn is_near_touch_target(&mut self, x: f32, y: f32) -> bool {
+        if self.is_touch_drag_active() {
+            return true;
+        }
+        if !self.input_mode.is_touch() || self.ui.backstage || self.modal_open() {
+            return false;
+        }
+        let p = egui::pos2(x, y);
+        let hit_r = 28.0_f32;
+        let page_hint = self.session.page_hint;
+        let sel = self.session.sel.clone();
+        let selected_obj = crate::objects::selected(self).map(|(pos, _)| pos);
+        let pages = &self.canvas.shown.pages;
+        let layout = self.session.layout();
+        let caret_center = |pos: &wordcraft_doc::Pos, at_top: bool| -> Option<egui::Pos2> {
+            let c = layout.caret_on(pos, page_hint)?;
+            let pr = pages.iter().find(|pl| pl.page == c.page)?;
+            let s = pr.scale as f32;
+            let sx = pr.rect.min.x + c.x * s;
+            let sy = if at_top { pr.rect.min.y + c.top * s - 7.0 } else { pr.rect.min.y + (c.top + c.height) * s + 7.0 };
+            Some(egui::pos2(sx, sy))
+        };
+
+        if sel.is_collapsed() {
+            if caret_center(&sel.focus, false).is_some_and(|c| c.distance(p) <= hit_r) {
+                return true;
+            }
+        } else {
+            let (start_pos, end_pos) = sel.ordered();
+            if caret_center(&start_pos, true).is_some_and(|c| c.distance(p) <= hit_r)
+                || caret_center(&end_pos, false).is_some_and(|c| c.distance(p) <= hit_r)
+            {
+                return true;
+            }
+        }
+
+        if let Some(pos) = selected_obj
+            && let Some(obj) = layout.object(&pos, page_hint)
+            && let Some(pr) = pages.iter().find(|pl| pl.page == obj.page)
+        {
+            let r = obj.rect;
+            let min_p = pr.to_screen(craft::behavior::kurbo::Point::new(f64::from(r.x), f64::from(r.y)));
+            let max_p = pr.to_screen(craft::behavior::kurbo::Point::new(f64::from(r.right()), f64::from(r.bottom())));
+            let bounds = egui::Rect::from_two_pos(min_p, max_p);
+            for corner in [bounds.left_top(), bounds.right_top(), bounds.left_bottom(), bounds.right_bottom()] {
+                if corner.distance(p) <= hit_r {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Screen rectangle `[x, y, width, height]` of the active caret in egui points, if visible.
+    pub fn caret_screen_rect(&mut self) -> Option<[f32; 4]> {
+        let page_hint = self.session.page_hint;
+        let focus = self.session.sel.focus.clone();
+        let pages = self.canvas.shown.pages.clone();
+        let layout = self.session.layout();
+        let c = layout.caret_on(&focus, page_hint)?;
+        let pr = pages.iter().find(|pl| pl.page == c.page)?;
+        let s = pr.scale as f32;
+        Some([pr.rect.min.x + c.x * s, pr.rect.min.y + c.top * s, (c.width * s).max(2.0), (c.height * s).max(14.0)])
+    }
+
+    /// Places or extends the document caret at screen point `(x, y)` (used for virtual keyboard
+    /// floating-cursor / spacebar trackpad movement). Returns true if selection moved.
+    pub fn move_caret_to_screen_point(&mut self, x: f32, y: f32, extend: bool) -> bool {
+        let p = egui::pos2(x, y);
+        let away = |pl: &craft::pages::ui::PlacedPage| {
+            let py = p.y - pl.rect.min.y;
+            (pl.band.0 - py).max(0.0).max(py - pl.band.1)
+        };
+        let placed = self
+            .canvas
+            .shown
+            .pages
+            .iter()
+            .filter(|pl| pl.rect.contains(p))
+            .min_by(|a, b| away(a).total_cmp(&away(b)))
+            .or_else(|| self.canvas.shown.pages.first());
+        let Some(placed) = placed else {
+            return false;
+        };
+        let at = placed.to_page(p);
+        let layout = self.session.layout();
+        let story = self.session.sel.focus.story;
+        let Some(target) = crate::canvas::touch_editing::touch_hit(&layout, placed.page, at.x as f32, at.y as f32, story, true) else {
+            return false;
+        };
+        let changed = target != self.session.sel.focus || (!extend && !self.session.sel.is_collapsed());
+        if changed {
+            let next_sel = if extend {
+                wordcraft_engine::Selection { anchor: self.session.sel.anchor.clone(), focus: target }
+            } else {
+                wordcraft_engine::Selection::caret(target)
+            };
+            self.session.set_selection(next_sel);
+            self.session.page_hint = placed.page;
+            self.canvas.scroll_to_caret = true;
+            if let Some(ctx) = self.ctx.clone() {
+                ctx.request_repaint();
+            }
+        }
+        changed
+    }
+
+    /// Snapshot of the current paragraph's visible text, UTF-16 selection `[start, end]`, and
+    /// screen caret rectangle for UIKit `UITextInput` (spacebar cursor, selection, predictive text).
+    pub fn ime_visible_snapshot(&mut self) -> serde_json::Value {
+        let wants_keyboard =
+            !self.ui.backstage && !self.modal_open() && (self.ctx.as_ref().is_some_and(|ctx| self.canvas.focused(ctx)) || self.canvas.focus_pending);
+        let caret = self.caret_screen_rect().unwrap_or([20.0, 120.0, 2.0, 18.0]);
+        let cursor = &self.session.sel.focus;
+        let anchor = &self.session.sel.anchor;
+
+        if cursor.story == anchor.story
+            && cursor.path == anchor.path
+            && self.session.math.is_none()
+            && let Some(para) = self.session.doc.para_at(cursor)
+        {
+            let view = wordcraft_doc::ime_text::VisibleParagraph::new(para);
+            if let (Some(c_u8), Some(a_u8)) = (view.visible_offset(cursor.off), view.visible_offset(anchor.off))
+                && let Some(w) = view.window(c_u8, a_u8, wordcraft_doc::ime_text::MAX_IME_TEXT_BYTES)
+            {
+                let start_u8 = w.cursor.min(w.anchor);
+                let end_u8 = w.cursor.max(w.anchor);
+                let start_u16 = w.text.get(..start_u8).map_or(0, |s| s.encode_utf16().count());
+                let end_u16 = w.text.get(..end_u8).map_or(start_u16, |s| s.encode_utf16().count());
+                return serde_json::json!({
+                    "available": true,
+                    "text": w.text,
+                    "sel_start": start_u16,
+                    "sel_end": end_u16,
+                    "caret": caret,
+                    "wants_keyboard": wants_keyboard,
+                });
+            }
+        }
+
+        serde_json::json!({
+            "available": false,
+            "text": "",
+            "sel_start": 0,
+            "sel_end": 0,
+            "caret": caret,
+            "wants_keyboard": wants_keyboard,
+        })
+    }
+
+    /// Maps `(start_utf16, end_utf16)` within the active paragraph's visible text to WordCraft's selection.
+    pub fn ime_set_utf16_selection(&mut self, start_utf16: usize, end_utf16: usize) -> bool {
+        let cursor = self.session.sel.focus.clone();
+        if self.session.math.is_some() {
+            return false;
+        }
+        let Some(para) = self.session.doc.para_at(&cursor) else {
+            return false;
+        };
+        let view = wordcraft_doc::ime_text::VisibleParagraph::new(para);
+        let Some(w) = view.visible_offset(cursor.off).and_then(|c| view.window(c, c, wordcraft_doc::ime_text::MAX_IME_TEXT_BYTES)) else {
+            return false;
+        };
+        let a_u8 = utf16_to_utf8_offset(&w.text, start_utf16);
+        let f_u8 = utf16_to_utf8_offset(&w.text, end_utf16);
+        let (Some(a_stored), Some(f_stored)) = (view.stored_offset(a_u8), view.stored_offset(f_u8)) else {
+            return false;
+        };
+        let sel = wordcraft_engine::Selection {
+            anchor: wordcraft_doc::Pos { off: a_stored, ..cursor.clone() },
+            focus: wordcraft_doc::Pos { off: f_stored, ..cursor },
+        };
+        self.session.set_selection(sel);
+        self.canvas.scroll_to_caret = true;
+        if let Some(ctx) = self.ctx.clone() {
+            ctx.request_repaint();
+        }
+        true
+    }
+
+    /// Replaces `[start_utf16, end_utf16]` inside the active paragraph with `replacement`.
+    pub fn ime_replace_utf16_range(&mut self, start_utf16: usize, end_utf16: usize, replacement: &str) -> bool {
+        if !self.ime_set_utf16_selection(start_utf16, end_utf16) {
+            return false;
+        }
+        if replacement.is_empty() {
+            if !self.session.sel.is_collapsed() {
+                let _ = self.run("text.backspace", serde_json::json!({}));
+            }
+        } else {
+            let _ = self.run("text.insert", serde_json::json!({ "text": replacement }));
+        }
+        if let Some(ctx) = self.ctx.clone() {
+            ctx.request_repaint();
+        }
+        true
+    }
+
+    /// Returns the UTF-16 offset in the active paragraph nearest screen point `(x, y)` if on that paragraph.
+    pub fn ime_utf16_offset_at_point(&mut self, x: f32, y: f32) -> Option<usize> {
+        let p = egui::pos2(x, y);
+        let placed = self.canvas.shown.pages.iter().find(|pl| pl.rect.contains(p))?.clone();
+        let at = placed.to_page(p);
+        let story = self.session.sel.focus.story;
+        let layout = self.session.layout();
+        let hit = crate::canvas::touch_editing::touch_hit(&layout, placed.page, at.x as f32, at.y as f32, story, true)?;
+        let cur = &self.session.sel.focus;
+        if hit.story != cur.story || hit.path != cur.path {
+            return None;
+        }
+        let para = self.session.doc.para_at(cur)?;
+        let view = wordcraft_doc::ime_text::VisibleParagraph::new(para);
+        let vis_off = view.visible_offset(hit.off)?;
+        let w = view.window(vis_off, vis_off, wordcraft_doc::ime_text::MAX_IME_TEXT_BYTES)?;
+        w.text.get(..w.cursor).map(|s| s.encode_utf16().count())
+    }
+
     /// The app with `host` as its services: files, jobs, settings sections and the language.
     pub fn with_host(mut self, host: std::sync::Arc<craft::host::Host>) -> Self {
         self.host = host;
@@ -509,4 +728,16 @@ impl WordApp {
         // The synthetic step this frame took is done even when drawing ended early.
         self.control_ui(&ctx);
     }
+}
+
+/// Converts a UTF-16 code-unit offset inside `text` to a valid UTF-8 byte boundary, clamping cleanly.
+fn utf16_to_utf8_offset(text: &str, utf16_offset: usize) -> usize {
+    let mut acc = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if acc >= utf16_offset {
+            return idx;
+        }
+        acc += ch.len_utf16();
+    }
+    text.len()
 }
