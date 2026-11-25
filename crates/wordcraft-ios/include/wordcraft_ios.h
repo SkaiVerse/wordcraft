@@ -39,7 +39,17 @@ char* wordcraft_get_key_commands_json(WordCraftHost* host);
 
 // Apple Pencil & Text Insertion
 int32_t wordcraft_insert_text_at_selection(WordCraftHost* host, const char* text);
+void wordcraft_send_backspace(WordCraftHost* host);
 int32_t wordcraft_send_pencil_stroke(WordCraftHost* host, int32_t page, const float* points, size_t count, const char* tool, const char* color, float width);
+
+// Platform Action Pump, File Picker Completion, Pasteboard & Fonts
+char* wordcraft_poll_platform_action(WordCraftHost* host);
+void wordcraft_complete_file_pick(WordCraftHost* host, uint64_t pick_id, const char* paths_json);
+void wordcraft_sync_pasteboard_text(WordCraftHost* host, const char* text);
+int32_t wordcraft_register_font_path(WordCraftHost* host, const char* path);
+int32_t wordcraft_register_font_bytes(WordCraftHost* host, const uint8_t* bytes, size_t len);
+int32_t wordcraft_is_touch_drag_active(WordCraftHost* host);
+int32_t wordcraft_is_point_in_canvas(WordCraftHost* host, float x, float y);
 
 // Render Pass
 int32_t wordcraft_render_frame(WordCraftHost* host);

@@ -287,6 +287,25 @@ pub fn system_font_dirs() -> Vec<std::path::PathBuf> {
                 }
             }
         }
+    } else if cfg!(target_os = "ios") {
+        dirs.extend(["/System/Library/Fonts", "/Library/Fonts"].map(Into::into));
+        if let Some(h) = &home {
+            dirs.push(h.join("Library/Fonts"));
+            dirs.push(h.join("Documents/Fonts"));
+        }
+        for parent in [
+            "/System/Library/AssetsV2",
+            "/System/Library/AssetsV2/PreinstalledAssetsV2/InstallWithOs",
+            "/private/var/mobile/Library/AssetsV2",
+            "/System/Library/Assets",
+        ] {
+            let Ok(entries) = std::fs::read_dir(parent) else { continue };
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with("com_apple_MobileAsset_Font") {
+                    dirs.push(e.path());
+                }
+            }
+        }
     } else if cfg!(windows) {
         let root = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
         dirs.push(root.join("Fonts"));

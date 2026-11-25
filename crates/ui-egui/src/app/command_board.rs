@@ -94,7 +94,10 @@ impl WordApp {
     pub(crate) fn catalog(&mut self) -> Option<AppCatalog> {
         let registry = self.session.registry.clone();
         // The interface chords are per platform: the window's own, which tests set.
-        let mac = self.ctx.as_ref().map_or(cfg!(target_os = "macos"), |ctx| craft::ui::runtime::windows::os_of(ctx) == craft::host::target::Os::Mac);
+        let mac = self
+            .ctx
+            .as_ref()
+            .map_or(cfg!(any(target_os = "macos", target_os = "ios")), |ctx| craft::ui::runtime::windows::os_of(ctx) == craft::host::target::Os::Mac);
         let os_changed = std::mem::replace(&mut self.command_catalog_mac, mac) != mac;
         // The labels are the interface language's: a button bound to a command without its own label, a menu row and
         // the command search show them, so the catalog is rebuilt when the language changes.

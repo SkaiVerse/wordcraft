@@ -215,6 +215,30 @@ impl WordApp {
         self.keyboard_inset_bottom = inset.max(0.0);
     }
 
+    /// Cancels an active canvas text selection or touch handle drag (used when a touch pan gesture takes over).
+    pub fn cancel_touch_drag(&mut self) {
+        self.canvas.cancel_text_drag();
+        self.canvas.touch_handle_dragging = None;
+        self.canvas.touch_loupe = None;
+    }
+
+    /// Whether a touch handle, object resize/move, table border, or ink stroke drag is active on the canvas.
+    pub fn is_touch_drag_active(&self) -> bool {
+        self.canvas.touch_handle_dragging.is_some()
+            || self.canvas.object_gesture.is_some()
+            || self.canvas.frame_held
+            || self.canvas.table_resize.is_some()
+            || self.canvas.table_dragging
+            || self.canvas.ink.is_some()
+            || self.canvas.erasing.is_some()
+            || self.canvas.ruler_gesture.is_some()
+    }
+
+    /// Whether `(x, y)` lies inside the editable document canvas (and no modal or backstage is covering it).
+    pub fn is_point_in_canvas(&self, x: f32, y: f32) -> bool {
+        !self.ui.backstage && !self.modal_open() && self.canvas.contains(egui::pos2(x, y))
+    }
+
     /// The app with `host` as its services: files, jobs, settings sections and the language.
     pub fn with_host(mut self, host: std::sync::Arc<craft::host::Host>) -> Self {
         self.host = host;

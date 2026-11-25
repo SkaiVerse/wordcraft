@@ -113,6 +113,52 @@ impl FontDb {
         v.into_iter().map(|t| t.2).collect()
     }
 
+    /// Add a font file at `path` directly into the system catalog (used on platforms like iOS
+    /// where CoreText enumerates installed font URLs outside static directories) and notify
+    /// watchers when new faces are added.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn add_system_font_path(&self, path: &std::path::Path) -> usize {
+        self.ensure_catalog();
+        let faces = file_face_names(path);
+        if faces.is_empty() {
+            return 0;
+        }
+        let mut cat = self.catalog.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut added = 0;
+        for f in faces {
+            let duplicate = cat.iter().any(|c| c.family.eq_ignore_ascii_case(&f.family) && c.style.eq_ignore_ascii_case(&f.style) && c.path == path);
+            if !duplicate {
+                cat.push(CatalogEntry {
+                    family: f.family,
+                    style: f.style,
+                    legacy: f.legacy,
+                    full_name: f.full_name,
+                    postscript: f.postscript,
+                    local: f.local,
+                    east_asian: f.east_asian,
+                    path: path.to_path_buf(),
+                });
+                added += 1;
+            }
+        }
+        drop(cat);
+        if added > 0 {
+            self.catalog_gen.fetch_add(1, Ordering::AcqRel);
+            self.fonts_changed();
+        }
+        added
+    }
+
+    /// Add decoded SFNT font bytes directly (e.g. from iOS CoreText `CGFont` table assembly)
+    /// and notify watchers so font menus and open documents relayout.
+    pub fn add_system_font_bytes(&self, bytes: Vec<u8>) -> usize {
+        let added = self.add_fonts(vec![(bytes, None)]);
+        if added > 0 {
+            self.fonts_changed();
+        }
+        added
+    }
+
     /// Add a user font (TTF/OTF/TTC bytes). Returns the number of faces added (0 if unparseable or
     /// every face was already present).
     pub fn add_font(&self, bytes: Vec<u8>) -> usize {

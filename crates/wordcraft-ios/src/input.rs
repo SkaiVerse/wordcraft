@@ -143,10 +143,11 @@ impl InputModeTracker {
         let mut is_rejected_palm = false;
 
         // Palm rejection: if Apple Pencil is currently active and this is a finger touch, reject it
-        if let Some(active_pencil) = self.pencil_touch_id {
-            if pointer_type == PointerType::DirectTouch && touch_id != active_pencil {
-                is_rejected_palm = true;
-            }
+        if let Some(active_pencil) = self.pencil_touch_id
+            && pointer_type == PointerType::DirectTouch
+            && touch_id != active_pencil
+        {
+            is_rejected_palm = true;
         }
 
         match phase {

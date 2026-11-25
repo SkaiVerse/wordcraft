@@ -15,6 +15,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 wordcraft-engine = { workspace = true }
+wordcraft-fonts = { workspace = true }
 wordcraft-ui-egui = { workspace = true }
 wordcraft-doc = { workspace = true }
 wordcraft-docx = { workspace = true }

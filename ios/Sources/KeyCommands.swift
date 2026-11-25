@@ -1,67 +1,71 @@
 import UIKit
 
-/// Model representing a command discoverable in iPadOS Hold-Cmd shortcut overlay.
-struct WordCraftKeyCommand: Decodable {
-    let id: String
-    let title: String
-    let input: String
-    let modifiers: UInt32
-}
+/// Bridges WordCraft's keyboard shortcuts to iPadOS `UIKeyCommand` for native Hold-Cmd HUD discovery.
+class KeyCommandsManager: NSObject {
+    private weak var hostViewController: UIViewController?
+    private var hostPtr: OpaquePointer?
 
-/// Manages registration and dispatch of native iPadOS `UIKeyCommand`s.
-final class KeyCommandsManager: NSObject {
-    private weak var hostController: UIViewController?
-    private let hostPointer: OpaquePointer
+    private struct CommandEntry: Decodable {
+        let id: String
+        let title: String
+        let input: String
+        let modifiers: UInt32
+    }
 
-    init(hostController: UIViewController, hostPointer: OpaquePointer) {
-        self.hostController = hostController
-        self.hostPointer = hostPointer
+    init(host: OpaquePointer, viewController: UIViewController) {
+        self.hostPtr = host
+        self.hostViewController = viewController
         super.init()
     }
 
-    /// Builds the list of native UIKeyCommands from WordCraft's central command registry.
+    /// Generates `[UIKeyCommand]` array mapped from Rust command metadata.
     func buildKeyCommands() -> [UIKeyCommand] {
-        guard let cString = wordcraft_get_key_commands_json(hostPointer) else {
+        guard let host = hostPtr,
+              let jsonPtr = wordcraft_get_key_commands_json(host) else {
             return []
         }
-        defer { wordcraft_free_string(cString) }
+        let jsonString = String(cString: jsonPtr)
+        wordcraft_free_string(jsonPtr)
 
-        let jsonString = String(cString: cString)
         guard let data = jsonString.data(using: .utf8),
-              let commands = try? JSONDecoder().decode([WordCraftKeyCommand].self, from: data) else {
+              let entries = try? JSONDecoder().decode([CommandEntry].self, from: data) else {
             return []
         }
 
-        return commands.map { cmd in
+        return entries.map { entry in
             var flags: UIKeyModifierFlags = []
-            if (cmd.modifiers & 1) != 0 { flags.insert(.alternate) }
-            if (cmd.modifiers & 2) != 0 { flags.insert(.control) }
-            if (cmd.modifiers & 4) != 0 { flags.insert(.shift) }
-            if (cmd.modifiers & 8) != 0 { flags.insert(.command) }
+            if (entry.modifiers & 1) != 0 { flags.insert(.alternate) }
+            if (entry.modifiers & 2) != 0 { flags.insert(.control) }
+            if (entry.modifiers & 4) != 0 { flags.insert(.shift) }
+            if (entry.modifiers & 8) != 0 { flags.insert(.command) }
 
-            let action = #selector(handleKeyCommand(_:))
-            let keyCommand = UIKeyCommand(
-                title: cmd.title,
+            let cmd = UIKeyCommand(
+                title: entry.title,
                 image: nil,
-                action: action,
-                input: cmd.input,
+                action: #selector(ViewController.handleKeyCommand(_:)),
+                input: entry.input,
                 modifierFlags: flags,
-                propertyList: cmd.id
+                propertyList: entry.id
             )
-            keyCommand.discoverabilityTitle = cmd.title
-            return keyCommand
+            cmd.wantsPriorityOverSystemBehavior = true
+            return cmd
         }
     }
 
-    /// Handles execution of a selected key command.
-    @objc func handleKeyCommand(_ sender: UIKeyCommand) {
-        guard let cmdId = sender.propertyList as? String else { return }
-        cmdId.withCString { cCmd in
-            "{}" .withCString { cParams in
-                if let response = wordcraft_dispatch_command(hostPointer, cCmd, cParams) {
-                    wordcraft_free_string(response)
-                }
+    func executeKeyCommand(_ sender: UIKeyCommand) {
+        guard let host = hostPtr,
+              let cmdId = sender.propertyList as? String else { return }
+
+        if let text = UIPasteboard.general.string {
+            text.withCString { cText in
+                wordcraft_sync_pasteboard_text(host, cText)
             }
+        } else {
+            wordcraft_sync_pasteboard_text(host, nil)
+        }
+
+        if let resPtr = wordcraft_dispatch_command(host, cmdId, "{}") {
+            wordcraft_free_string(resPtr)
         }
     }
 }
