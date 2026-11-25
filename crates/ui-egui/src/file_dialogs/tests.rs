@@ -923,3 +923,73 @@ fn many_failed_fonts_end_with_a_count() {
     a.add_fonts(fonts).unwrap();
     assert_eq!(status_text(&a), "Added 0 fonts; 5 couldn't be read: f0.ttf, f1.ttf, f2.ttf and 2 more");
 }
+
+/// On hosts with `browser_saves() == true` (iPadOS / Web), Save As, Save as Template, Export, and
+/// Print PDF must route through `Files::save` (export sheet) rather than `Files::pick` (Open picker).
+#[test]
+fn browser_saves_routes_save_as_and_export_through_files_save_instead_of_pick() {
+    use craft::host::{AppInfo, FileError, Files, Host};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingBrowserFiles {
+        picks: Mutex<Vec<PickRequest>>,
+        saves: Mutex<Vec<(PickRequest, Vec<u8>)>>,
+    }
+
+    impl Files for RecordingBrowserFiles {
+        fn pick(&self, req: PickRequest) -> PickId {
+            self.picks.lock().unwrap().push(req);
+            PickId(1)
+        }
+        fn save(&self, req: PickRequest, bytes: Vec<u8>) -> PickId {
+            let mut saves = self.saves.lock().unwrap();
+            saves.push((req, bytes));
+            PickId(saves.len() as u64 + 100)
+        }
+        fn take_answer(&self, _id: PickId) -> Option<Picked> {
+            None
+        }
+        fn forget(&self, _id: PickId) {}
+        fn pick_pending(&self) -> bool {
+            false
+        }
+        fn read(&self, path: &std::path::Path) -> Result<Vec<u8>, FileError> {
+            Err(FileError::NotFound(path.to_path_buf()))
+        }
+        fn write(&self, path: &std::path::Path, _bytes: &[u8], _intent: craft::host::WriteIntent) -> Result<bool, FileError> {
+            Err(FileError::PermissionDenied(path.to_path_buf()))
+        }
+        fn exists(&self, _path: &std::path::Path) -> bool {
+            false
+        }
+        fn last_folder(&self, _purpose: &str) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn can_pick(&self) -> bool {
+            true
+        }
+        fn browser_saves(&self) -> bool {
+            true
+        }
+    }
+
+    let files = Arc::new(RecordingBrowserFiles::default());
+    let host = Host::builder(AppInfo { id: "wordcraft-test", name: "WordCraft", version: "0" }).files(files.clone()).build();
+    let mut doc = wordcraft_doc::Document::from_text("Export test");
+    doc.core.title = "Quarterly".into();
+    let mut app = WordApp::new(wordcraft_engine::Session::new(doc), crate::Services::default()).with_host(Arc::new(host));
+
+    app.save_as_dialog();
+    app.save_as_template_dialog();
+    app.export_dialog("pdf");
+    app.export_dialog("docx");
+    app.export_dialog(crate::print_page::EXPORT_WORD_2003);
+    app.print_pdf_dialog();
+
+    assert!(files.picks.lock().unwrap().is_empty(), "browser_saves must never invoke Files::pick for Save As or Export");
+    let saves = files.saves.lock().unwrap();
+    let names: Vec<String> = saves.iter().map(|(req, _)| req.file_name.clone().unwrap_or_default()).collect();
+    assert_eq!(names, ["Quarterly.docx", "Quarterly.dotx", "Quarterly.pdf", "Quarterly.docx", "Quarterly.xml", "Quarterly.pdf"]);
+    assert!(saves.iter().all(|(_, bytes)| !bytes.is_empty()), "all saved/exported payloads must be non-empty");
+}

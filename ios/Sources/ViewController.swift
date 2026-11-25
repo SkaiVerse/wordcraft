@@ -1,4 +1,5 @@
 import UIKit
+import GameController
 
 /// Main root ViewController hosting WordCraft's GPU `MetalView` and bridging iPadOS system events
 /// (fullscreen status-bar suppression, keyboard insets, Hold-Cmd UIKeyCommands,
@@ -145,20 +146,69 @@ class ViewController: UIViewController {
         nc.addObserver(self, selector: #selector(keyboardWillHide(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
         nc.addObserver(self, selector: #selector(appDidBecomeActive(_:)), name: UIApplication.didBecomeActiveNotification, object: nil)
         nc.addObserver(self, selector: #selector(appWillResignActive(_:)), name: UIApplication.willResignActiveNotification, object: nil)
+        nc.addObserver(self, selector: #selector(windowDidBecomeKey(_:)), name: UIWindow.didBecomeKeyNotification, object: nil)
+        nc.addObserver(self, selector: #selector(hardwareKeyboardDidConnect(_:)), name: NSNotification.Name.GCKeyboardDidConnect, object: nil)
+        nc.addObserver(self, selector: #selector(hardwareKeyboardDidDisconnect(_:)), name: NSNotification.Name.GCKeyboardDidDisconnect, object: nil)
     }
 
     @objc private func appDidBecomeActive(_ notification: Notification) {
         syncSystemPasteboard()
-        if let host = host {
-            wordcraft_clear_modifiers(host)
-        }
+        metalView.resetHardwareKeyboardState()
         restoreKeyboardResponder()
     }
 
     @objc private func appWillResignActive(_ notification: Notification) {
-        if let host = host {
-            wordcraft_clear_modifiers(host)
+        metalView.resetHardwareKeyboardState()
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        restoreKeyboardResponder()
+    }
+
+    @objc private func hardwareKeyboardDidDisconnect(_ notification: Notification) {
+        metalView.resetHardwareKeyboardState()
+    }
+
+    @objc private func hardwareKeyboardDidConnect(_ notification: Notification) {
+        metalView.resetHardwareKeyboardState()
+        guard presentedViewController == nil else { return }
+        // Re-bind responder & UITextInput after Bluetooth multi-host switch (PC -> iPad)
+        // so `pressesBegan` and `UIKeyCommand` resume immediately without needing a screen tap.
+        if metalView.isFirstResponder {
+            metalView.resignFirstResponder()
         }
+        metalView.becomeFirstResponder()
+        metalView.reloadInputViews()
+    }
+
+    // Fallback: if UIKit moves focus off MetalView after keyboard reconnect/system UI, re-claim responder and forward keys.
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presentedViewController == nil && !metalView.isFirstResponder {
+            metalView.becomeFirstResponder()
+            if metalView.forwardHardwarePressesBegan(presses) {
+                return
+            }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presentedViewController == nil && !metalView.isFirstResponder && metalView.forwardHardwarePressesChanged(presses) {
+            return
+        }
+        super.pressesChanged(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presentedViewController == nil && !metalView.isFirstResponder && metalView.forwardHardwarePressesEnded(presses) {
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        metalView.resetHardwareKeyboardState()
+        super.pressesCancelled(presses, with: event)
     }
 
     @objc private func keyboardWillShow(_ notification: Notification) {

@@ -45,6 +45,14 @@ class DocumentPickerManager: NSObject, UIDocumentPickerDelegate {
         }
 
         let kind = (json["kind"] as? String) ?? "open"
+        if kind == "save" {
+            // Save/Export requests must use `file.save_bytes` (`forExporting:`) — never present an Open picker.
+            activePickId = nil
+            activeIsSave = false
+            pendingTempExportURL = nil
+            wordcraft_complete_file_save(host, pickId, false, nil)
+            return
+        }
         activeIsSave = false
         pendingTempExportURL = nil
 

@@ -67,7 +67,7 @@ pub(super) fn save_as(ui: &mut Ui, app: &mut WordApp) {
         app.save_as_dialog();
     }
     // Linux and the BSDs (#3535): WordCraft's own browser when the system dialog doesn't appear.
-    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_arch = "wasm32")))]
     if clicked(&Button::new(label("Browse in WordCraft…")).id_salt("save-as-browse-own").show(ui)) {
         let _ = app.run("ui.fileBrowser", json!({"purpose": "save"}));
     }

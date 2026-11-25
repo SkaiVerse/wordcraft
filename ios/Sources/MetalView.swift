@@ -693,12 +693,33 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     // MARK: - Physical Keyboard Forwarding (`pressesBegan` / `pressesEnded` / Repeat)
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        guard let host = host else {
-            super.pressesBegan(presses, with: event)
-            return
+    func resetHardwareKeyboardState() {
+        heldKeyForRepeat = nil
+        if let host = host {
+            wordcraft_clear_modifiers(host)
         }
+    }
 
+    private func printableKeyText(for key: UIKey, hid: Int32) -> String? {
+        // Never treat non-printable control, navigation, function, or modifier keys as text,
+        // and never forward iOS sentinel strings like "UIKeyInputRightArrow".
+        if (40...43).contains(hid) || (57...82).contains(hid) || hid == 88 || (104...115).contains(hid) || (224...231).contains(hid) {
+            return nil
+        }
+        let raw = key.characters
+        if raw.isEmpty || raw.hasPrefix("UIKeyInput") {
+            return nil
+        }
+        let filtered = String(raw.unicodeScalars.filter { scalar in
+            let v = scalar.value
+            return v >= 0x20 && v != 0x7F && !(0xE000...0xF8FF).contains(v)
+        })
+        return filtered.isEmpty ? nil : filtered
+    }
+
+    @discardableResult
+    func forwardHardwarePressesBegan(_ presses: Set<UIPress>) -> Bool {
+        guard let host = host else { return false }
         var handledAny = false
         for press in presses {
             guard let key = press.key else { continue }
@@ -711,32 +732,27 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
                 syncPasteboard(host)
             }
 
-            let text = key.characters
-            if text.isEmpty {
-                wordcraft_send_key(host, hid, mods, true, nil)
-            } else {
+            let text = printableKeyText(for: key, hid: hid)
+            if let text = text {
                 text.withCString { cText in
                     wordcraft_send_key(host, hid, mods, true, cText)
                 }
+            } else {
+                wordcraft_send_key(host, hid, mods, true, nil)
             }
 
             // Track non-modifier keys for smooth hardware key-repeat (arrows, backspace, typing)
             if hid < 224 || hid > 231 {
                 let now = CACurrentMediaTime()
-                heldKeyForRepeat = HeldKey(keyCode: hid, modifiers: mods, text: text.isEmpty ? nil : text, downAt: now, lastRepeatAt: now)
+                heldKeyForRepeat = HeldKey(keyCode: hid, modifiers: mods, text: text, downAt: now, lastRepeatAt: now)
             }
         }
-
-        if !handledAny {
-            super.pressesBegan(presses, with: event)
-        }
+        return handledAny
     }
 
-    override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        guard let host = host else {
-            super.pressesChanged(presses, with: event)
-            return
-        }
+    @discardableResult
+    func forwardHardwarePressesChanged(_ presses: Set<UIPress>) -> Bool {
+        guard let host = host else { return false }
         var handledAny = false
         for press in presses {
             guard let key = press.key else { continue }
@@ -745,15 +761,12 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             let mods = effectiveModifierBitmask(from: key)
             wordcraft_send_key(host, hid, mods, true, nil)
         }
-        if !handledAny { super.pressesChanged(presses, with: event) }
+        return handledAny
     }
 
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        guard let host = host else {
-            super.pressesEnded(presses, with: event)
-            return
-        }
-
+    @discardableResult
+    func forwardHardwarePressesEnded(_ presses: Set<UIPress>) -> Bool {
+        guard let host = host else { return false }
         var handledAny = false
         for press in presses {
             guard let key = press.key else { continue }
@@ -766,17 +779,29 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             }
             wordcraft_send_key(host, hid, mods, false, nil)
         }
+        return handledAny
+    }
 
-        if !handledAny {
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !forwardHardwarePressesBegan(presses) {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
+    override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !forwardHardwarePressesChanged(presses) {
+            super.pressesChanged(presses, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !forwardHardwarePressesEnded(presses) {
             super.pressesEnded(presses, with: event)
         }
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        heldKeyForRepeat = nil
-        if let host = host {
-            wordcraft_clear_modifiers(host)
-        }
+        resetHardwareKeyboardState()
         super.pressesCancelled(presses, with: event)
     }
 

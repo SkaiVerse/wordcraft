@@ -340,12 +340,15 @@ impl WordCraftHost {
             self.raw_input.events.push(Event::Key { key, physical_key: Some(key), pressed: is_down, repeat: false, modifiers: egui_modifiers });
         }
 
-        // Only emit text when neither Command nor Control is held, and strip control/Apple PUA function chars.
+        // Only emit text when neither Command nor Control is held, for printable keys (never UIKit's
+        // `UIKeyInput*` sentinel strings or control/navigation HID codes), and strip Apple PUA chars.
         if is_down
             && !egui_modifiers.command
             && !egui_modifiers.mac_cmd
             && !egui_modifiers.ctrl
+            && !is_non_text_hid(key_code)
             && let Some(txt) = text
+            && !txt.starts_with("UIKeyInput")
         {
             let filtered: String = txt.chars().filter(|c| !c.is_control() && !('\u{E000}'..='\u{F8FF}').contains(c)).collect();
             if !filtered.is_empty() {
@@ -784,6 +787,11 @@ pub fn map_key_code(code: i32) -> Option<Key> {
     }
 }
 
+/// Whether a USB HID key code is a non-printable control, navigation, function, or modifier key.
+fn is_non_text_hid(hid: i32) -> bool {
+    matches!(hid, 40..=43 | 57..=82 | 88 | 104..=115 | 224..=231)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -850,5 +858,19 @@ mod tests {
         host.clear_modifiers();
         assert_eq!(host.current_modifiers, Modifiers::NONE);
         assert!(host.raw_input.events.iter().any(|e| matches!(e, Event::ModifiersChanged(m) if *m == Modifiers::NONE)));
+    }
+
+    #[test]
+    fn send_key_never_emits_uikeyinput_or_navigation_text() {
+        let mut host = WordCraftHost::new(2.0, 1024.0, 768.0);
+        host.send_key(79, 0, true, Some("UIKeyInputRightArrow"));
+        host.send_key(80, 0, true, Some("UIKeyInputLeftArrow"));
+        host.send_key(41, 0, true, Some("UIKeyInputEscape"));
+        assert!(!host.raw_input.events.iter().any(|e| matches!(e, Event::Text(_))));
+        assert!(host.raw_input.events.iter().any(|e| matches!(e, Event::Key { key: Key::ArrowRight, pressed: true, .. })));
+
+        // Printable letters still emit Event::Text cleanly.
+        host.send_key(4, 0, true, Some("a"));
+        assert!(host.raw_input.events.iter().any(|e| matches!(e, Event::Text(t) if t == "a")));
     }
 }

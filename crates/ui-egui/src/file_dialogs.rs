@@ -420,6 +420,22 @@ impl WordApp {
 
     /// Ask where to save, save there, then do `after`.
     pub(crate) fn save_as(&mut self, after: AfterSave) -> Asked {
+        if self.browser_saves() {
+            let result = self.run("file.saveAs", json!({}));
+            let saved = matches!(&result, Ok(v) if v.get("saved").and_then(Value::as_bool) == Some(true) || v.get("downloaded").is_some());
+            if saved {
+                self.ui.backstage = false;
+                if let Some(ctx) = self.ctx.clone() {
+                    self.canvas.focus_page(&ctx);
+                }
+                self.clear_save_as_error();
+            } else if let Err(error) = &result
+                && matches!(after, AfterSave::Nothing | AfterSave::AutoSave)
+            {
+                self.fail_save_as(error);
+            }
+            return Asked::Done(result);
+        }
         let name = self.default_save_name();
         let mut req = PickRequest::save("document").file_name(name.clone()).save_as(true);
         req.filters = crate::save_types::save_filters(&name);
@@ -456,6 +472,20 @@ impl WordApp {
     /// the user templates folder (the app's own is made on first use), then save there as Save As
     /// does. Returns the folder the dialog starts in.
     pub(crate) fn save_as_template_dialog(&mut self) -> Option<String> {
+        if self.browser_saves() {
+            let name = format!("{}.dotx", self.title_stem());
+            match self.run("file.saveAs", json!({"path": name})) {
+                Ok(_) => {
+                    self.ui.backstage = false;
+                    if let Some(ctx) = self.ctx.clone() {
+                        self.canvas.focus_page(&ctx);
+                    }
+                    self.clear_save_as_error();
+                }
+                Err(error) => self.fail_save_as(&error),
+            }
+            return None;
+        }
         let dir = self.user_templates_dir();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(d) = &dir
@@ -477,19 +507,58 @@ impl WordApp {
 
     /// File › Export: ask where to save a copy in this format, then write it.
     pub(crate) fn export_dialog(&mut self, ext: &str) {
+        if self.browser_saves() {
+            let result = match ext {
+                "pdf" => self.run("file.exportPdf", json!({})).map(|_| ()),
+                "png" => self.run("file.exportPng", json!({})).map(|_| ()),
+                _ => self.browser_export_copy(ext),
+            };
+            match result {
+                Ok(()) => self.clear_export_error(),
+                Err(e) => {
+                    let _ = self.fail_export(e);
+                }
+            }
+            return;
+        }
         let req = self.export_request(ext);
         // A refusal or failure is reported by `finish_pick` itself (Export page and status bar).
         let _ = self.ask_file(req, AfterPick::Export { ext: ext.to_string() });
     }
 
+    /// Serializes a copy of the document in `ext` and opens the sandbox save/export sheet via `Files::save`.
+    fn browser_export_copy(&mut self, ext: &str) -> Result<(), String> {
+        let file_ext = crate::print_page::export_file_ext(ext);
+        let name = format!("{}.{}", self.title_stem(), file_ext);
+        let params = if ext == "xml" || ext == crate::print_page::EXPORT_WORD_2003 {
+            let format = if ext == "xml" { wordcraft_engine::cmd::file::FORMAT_FLAT_OPC } else { crate::print_page::EXPORT_WORD_2003 };
+            json!({"format": format})
+        } else {
+            json!({})
+        };
+        let opts = wordcraft_engine::cmd::file::export_options(&self.session, &params);
+        let bytes = wordcraft_engine::io::save_bytes_with(&name, &self.session.doc, None, &opts)?;
+        let ticket = self.host.files().save(PickRequest::save("export").file_name(name.clone()), bytes);
+        self.saves_in_flight.push(crate::SaveInFlight {
+            ticket,
+            name: name.clone(),
+            document: self.session.document_id(),
+            marked_saved: false,
+            rev: self.session.rev(),
+            undo_stamp: None,
+        });
+        self.status(crate::i18n::fmt(tl!("Exported {path}"), &[("path", &name)]));
+        Ok(())
+    }
+
     /// The request that asks where to save a copy in export format `ext`: the format's name and type,
     /// so the chooser's type menu shows it. Also what Browse in WordCraft… asks again for a pending export.
     pub(crate) fn export_request(&self, ext: &str) -> PickRequest {
-        let file_ext = crate::print_page::export_file_ext(ext).to_string();
+        let file_ext = crate::print_page::export_file_ext(ext);
         let name = format!("{}.{}", self.title_stem(), file_ext);
-        let mut req = PickRequest::save("export").file_name(name).suggested_extension(file_ext.clone());
+        let mut req = PickRequest::save("export").file_name(name).suggested_extension(file_ext.to_string());
         if let Some(&(label, _)) = crate::print_page::EXPORT_FORMATS.iter().find(|&&(_, e)| e == ext) {
-            req = req.filter(tl!(label), &[file_ext.as_str()]);
+            req = req.filter(tl!(label), &[file_ext]);
         }
         req
     }
@@ -497,6 +566,10 @@ impl WordApp {
     /// File › Print › Save these pages as PDF: ask where, then write the pages the print
     /// settings choose.
     pub(crate) fn print_pdf_dialog(&mut self) {
+        if self.browser_saves() {
+            let _ = self.run("file.exportPdf", self.ui.print.params());
+            return;
+        }
         let name = format!("{}.pdf", self.title_stem());
         let settings = self.ui.print.params();
         let req = PickRequest::save("export").file_name(name).suggested_extension("pdf").filter(tl!("PDF"), &["pdf"]);
