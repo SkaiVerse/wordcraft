@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// sandbox-safe copy/export flows so Open, Save, Save As, Export PDF/PNG, and Insert Picture
 /// work reliably under iCloud Drive, On My iPad, USB drives, and third-party providers.
 class DocumentPickerManager: NSObject, UIDocumentPickerDelegate {
+    var onFinished: (() -> Void)?
     private var rawHost: OpaquePointer?
     private var activePickId: UInt64?
     private var activeIsSave: Bool = false
@@ -129,6 +130,9 @@ class DocumentPickerManager: NSObject, UIDocumentPickerDelegate {
         if let temp = pendingTempExportURL {
             pendingTempExportURL = nil
             try? FileManager.default.removeItem(at: temp)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.onFinished?()
         }
     }
 }

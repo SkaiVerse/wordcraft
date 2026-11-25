@@ -8,9 +8,9 @@ use craft::menu::RibbonMenuRequest;
 use craft::review::ui::Avatar;
 use craft::theme::variant::Tone;
 use craft::theme::{ControlSize, CustomVariant, Emphasis, RadiusStep, Tokens, Variant, VariantLook};
-use craft::ui::buttons::button::ButtonStyleKey;
+use craft::ui::buttons::button::{ButtonOutput, ButtonStyleKey};
 use craft::ui::buttons::icon_button::IconButtonStyleKey;
-use craft::ui::buttons::{Button, IconButton};
+use craft::ui::buttons::{Button, ControlPlace, IconButton, RibbonLook};
 use craft::ui::choice::Switch;
 use craft::ui::contract::{Bind, BodyCx, Props as _, Show as _, ShowCollection as _, ShowContainer as _, TooltipSpec, Trigger};
 use craft::ui::display::{Divider, Text};
@@ -18,7 +18,7 @@ use craft::ui::list::{UndoList, UndoMark, UndoRows, UndoWords, footer_text, undo
 use craft::ui::menu::{Menu, MenuItem};
 use craft::ui::popover::Popover;
 use craft::ui::primitives::IconSpec;
-use craft::ui::runtime::env::Env;
+use craft::ui::runtime::env::{Env, with_env};
 use craft::ui::runtime::inspect;
 use craft::ui::runtime::windows::{WindowAction, WindowHost};
 use craft::ui::shell::{Title, TitleBar};
@@ -101,14 +101,43 @@ fn leading(app: &mut WordApp, ui: &mut Ui) -> Option<egui::Rect> {
     super::union([Some(switch), toolbar].into_iter().flatten())
 }
 
+/// Whether the Quick Access Toolbar uses enlarged (2x) touch- and Apple Pencil-friendly sizing.
+fn large_quick_access(app: &WordApp) -> bool {
+    cfg!(target_os = "ios") || app.input_mode.is_touch()
+}
+
+/// Returns `(main_icon_px, arrow_icon_px, button_side_px)` for the 2x Quick Access Toolbar buttons.
+fn qat_large_sides(ui: &Ui) -> (u8, u8, u8) {
+    let size = &Env::of(ui).tokens.size;
+    let row = (size.control.md * 2.0).round().clamp(48.0, (size.bar.title - 8.0).max(48.0));
+    let icon = (size.icon.md * 2.0).round().clamp(28.0, (row - 12.0).max(28.0));
+    let arrow = (size.icon.glyph_md * 1.75).round().clamp(18.0, (row - 16.0).max(18.0));
+    (icon as u8, arrow as u8, row as u8)
+}
+
+/// Shows one Quick Access Toolbar `IconButton`, scaling its glyph and hit box to `large` (`(icon, side)`) when set.
+fn show_qat_button(ui: &mut Ui, button: IconButton<'_>, large: Option<(u8, u8)>) -> ButtonOutput {
+    match large {
+        Some((icon, row)) => with_env(
+            ui,
+            |o| {
+                o.values.set(ControlPlace::Ribbon);
+                o.values.set(RibbonLook::new(0, icon).row(row));
+            },
+            |ui| button.show(ui),
+        ),
+        None => button.show(ui),
+    }
+}
+
 /// The AutoSave switch: off and with the reason as its tooltip when AutoSave can't cover the document (#196,
 /// #176); a click then offers Save As where that helps. Returns the rect it took.
 fn autosave(app: &mut WordApp, ui: &mut Ui) -> egui::Rect {
     let block = app.autosave_block();
     let on = app.autosaves() && block.is_none();
     let tip = block.as_ref().map_or_else(|| tl!("AutoSave saves every change to the file (needs a saved document)").to_string(), |b| b.reason());
-    // The small switch, as the old title bar drew it.
-    let out = Switch::new(Bind::given(on)).label(tl!("AutoSave").to_string()).size(ControlSize::Sm).tooltip(TooltipSpec::new(tip)).show(ui);
+    let switch_size = if large_quick_access(app) { ControlSize::Md } else { ControlSize::Sm };
+    let out = Switch::new(Bind::given(on)).label(tl!("AutoSave").to_string()).size(switch_size).tooltip(TooltipSpec::new(tip)).show(ui);
     if out.response.clicked() {
         match block {
             None => {
@@ -129,6 +158,7 @@ fn autosave(app: &mut WordApp, ui: &mut Ui) -> egui::Rect {
 fn quick_access(app: &mut WordApp, ui: &mut Ui) -> Option<egui::Rect> {
     let ids: Vec<String> = app.session.ribbon.qat().into_iter().map(str::to_string).collect();
     let ctx = ui.ctx().clone();
+    let large = large_quick_access(app).then(|| qat_large_sides(ui));
     let mut rects = Vec::new();
     // The buttons are an inspected region, so the keytips badge them.
     inspect::record(ui, crate::keytips::qat_region(), |ui| {
@@ -140,18 +170,18 @@ fn quick_access(app: &mut WordApp, ui: &mut Ui) -> Option<egui::Rect> {
             if id == "edit.undo" {
                 button = button.tooltip(TooltipSpec::new(crate::i18n::prefixed("Undo", app.session.undo_label().unwrap_or(""))));
             }
-            let out = button.show(ui);
+            let out = show_qat_button(ui, button, large.map(|(icon, _, row)| (icon, row)));
             rects.push(out.response.rect);
             // The ribbon's command menu: on or off the toolbar, and the customize rows.
             let request = RibbonMenuRequest::new(Some(CommandRef::new(id.as_str())), out.response.rect.left_bottom());
             Menu::context(tl!("Quick Access Toolbar").to_string(), &out.response).show(ui, |ui, _| crate::ribbon::command_menu(ui, app, &request));
             if id == "edit.undo" {
                 // The list is the document's steps, not the Markdown Source pane's typing.
-                rects.push(undo_arrow(app, ui, enabled && app.session.md_source.is_none()));
+                rects.push(undo_arrow(app, ui, enabled && app.session.md_source.is_none(), large.map(|(_, arrow, row)| (arrow, row))));
             }
         }
     });
-    rects.push(qat_menu(app, ui));
+    rects.push(qat_menu(app, ui, large.map(|(icon, _, row)| (icon, row))));
     super::union(rects)
 }
 
@@ -160,9 +190,10 @@ const UNDO_ROWS_SHOWN: u16 = 8;
 
 /// The small arrow beside Undo: a list of steps to undo several at once, with a footer that names how many a pick
 /// undoes, or Cancel while none is marked (#1903). Returns the arrow's rect.
-fn undo_arrow(app: &mut WordApp, ui: &mut Ui, enabled: bool) -> egui::Rect {
+fn undo_arrow(app: &mut WordApp, ui: &mut Ui, enabled: bool, large: Option<(u8, u8)>) -> egui::Rect {
     // The small filled triangle of the old toolbar.
-    let out = IconButton::new(IconSpec::glyph(&crate::ribbon::common::MENU_ARROW)).label(tl!("Undo History").to_string()).enabled(enabled).show(ui);
+    let button = IconButton::new(IconSpec::glyph(&crate::ribbon::common::MENU_ARROW)).label(tl!("Undo History").to_string()).enabled(enabled);
+    let out = show_qat_button(ui, button, large);
     let labels = undo_list_rows(app);
     let mut open = app.chrome.undo;
     if out.response.clicked() {
@@ -205,9 +236,9 @@ fn undo_arrow(app: &mut WordApp, ui: &mut Ui, enabled: bool) -> egui::Rect {
 }
 
 /// The menu button (…): common commands to show or hide, More Commands…, and Hide. Returns the button's rect.
-fn qat_menu(app: &mut WordApp, ui: &mut Ui) -> egui::Rect {
-    let out =
-        IconButton::new(IconId::new("wordcraft.more")).label(tl!("Customize Quick Access Toolbar").to_string()).glyphs(GlyphRole::Tool).show(ui);
+fn qat_menu(app: &mut WordApp, ui: &mut Ui, large: Option<(u8, u8)>) -> egui::Rect {
+    let button = IconButton::new(IconId::new("wordcraft.more")).label(tl!("Customize Quick Access Toolbar").to_string()).glyphs(GlyphRole::Tool);
+    let out = show_qat_button(ui, button, large);
     let shown: Vec<(&'static str, String, bool)> = QAT_MENU
         .iter()
         .filter_map(|id| {

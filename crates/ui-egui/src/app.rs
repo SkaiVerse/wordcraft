@@ -26,36 +26,26 @@ mod prefs;
 #[cfg(test)]
 pub(crate) use commands::works_without_document;
 
+fn size_map(pairs: &[(&str, f32)]) -> craft::theme::SizeMap {
+    use craft::theme::SizeValue;
+    pairs.iter().map(|&(path, value)| (path.to_owned(), SizeValue::Number(value))).collect()
+}
+
 /// WordCraft's own sizes over the size set. The display role is the File pages' titles (Info, Open, Print,
 /// Options…), production's 26 pt semibold over its 15 pt section headings; the suite's display size (38 pt) is a
 /// start screen's brand title, which WordCraft does not show.
 static APP_SIZES: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = std::sync::LazyLock::new(|| {
-    use craft::theme::SizeValue;
-    let all = [("typography.display.size", 26.0), ("typography.display.line_height", 32.0)]
-        .into_iter()
-        .map(|(path, value)| (path.to_owned(), SizeValue::Number(value)))
-        .collect();
+    let all = size_map(&[("typography.display.size", 26.0), ("typography.display.line_height", 32.0)]);
     std::sync::Arc::new(craft::theme::AppSizes { all, ..Default::default() })
 });
 
-/// Touch-adapted interface metrics: enforces minimum 44x44pt hit targets across controls, buttons,
-/// and handles for comfortable touch ergonomics on iPadOS.
+/// Touch-adapted interface metrics: doubles the title bar height (`size.bar.title`) on touch and
+/// iPadOS so the Quick Access Toolbar buttons have roomy 2x touch targets for fingers and Apple Pencil.
 static APP_SIZES_TOUCH: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = std::sync::LazyLock::new(|| {
-    use craft::theme::SizeValue;
-    let all = [
-        ("typography.display.size", 26.0),
-        ("typography.display.line_height", 32.0),
-        ("control.button.least_height", 44.0),
-        ("control.button.least_width", 44.0),
-        ("control.row.least_height", 44.0),
-        ("control.handle.sm", 24.0),
-        ("control.handle.md", 32.0),
-        ("control.handle.lg", 44.0),
-    ]
-    .into_iter()
-    .map(|(path, value)| (path.to_owned(), SizeValue::Number(value)))
-    .collect();
-    std::sync::Arc::new(craft::theme::AppSizes { all, ..Default::default() })
+    let all = size_map(&[("typography.display.size", 26.0), ("typography.display.line_height", 32.0)]);
+    let compact = size_map(&[("size.bar.title", 64.0)]);
+    let comfortable = size_map(&[("size.bar.title", 76.0)]);
+    std::sync::Arc::new(craft::theme::AppSizes { all, compact, comfortable, ..Default::default() })
 });
 
 impl WordApp {
@@ -493,7 +483,11 @@ impl WordApp {
             .alt_code_pages(AltCodePages::new(ansi, oem))
             .set(ComponentSet::Productivity);
         env.motion = self.ui.animations.motion();
-        env.sizes = if self.input_mode.is_touch() { std::sync::Arc::clone(&APP_SIZES_TOUCH) } else { std::sync::Arc::clone(&APP_SIZES) };
+        env.sizes = if cfg!(target_os = "ios") || self.input_mode.is_touch() {
+            std::sync::Arc::clone(&APP_SIZES_TOUCH)
+        } else {
+            std::sync::Arc::clone(&APP_SIZES)
+        };
         env
     }
 

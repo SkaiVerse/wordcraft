@@ -160,16 +160,7 @@ impl WordApp {
 }
 
 /// The ribbon, then its keytips, in a top slot: the keytips read what the ribbon recorded this pass.
-/// When screen width is constrained (< 800pt in Split View / Stage Manager) or in touch mode,
-/// the ribbon is horizontally scrollable with touch swiping.
 fn ribbon_slot(app: &mut WordApp, ui: &mut egui::Ui) {
-    if ui.available_width() < 800.0 || app.input_mode.is_touch() {
-        egui::ScrollArea::horizontal().id_salt("ribbon_horizontal_scroll").auto_shrink([false, true]).show(ui, |ui| {
-            let out = ribbon::show(app, ui);
-            crate::keytips::show(ui, app, &out);
-        });
-    } else {
-        let out = ribbon::show(app, ui);
-        crate::keytips::show(ui, app, &out);
-    }
+    let out = ribbon::show(app, ui);
+    crate::keytips::show(ui, app, &out);
 }

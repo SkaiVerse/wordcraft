@@ -24,6 +24,8 @@ void wordcraft_set_safe_insets(WordCraftHost* host, float top, float bottom, flo
 void wordcraft_send_touch(WordCraftHost* host, int32_t phase, float x, float y, uint64_t touch_id, float force, int32_t pointer_type);
 void wordcraft_send_mouse(WordCraftHost* host, float x, float y, int32_t button, bool is_down, float scroll_dx, float scroll_dy);
 void wordcraft_send_key(WordCraftHost* host, int32_t key_code, uint32_t modifiers, bool is_down, const char* text);
+void wordcraft_send_key_tap(WordCraftHost* host, int32_t key_code, uint32_t modifiers);
+void wordcraft_clear_modifiers(WordCraftHost* host);
 void wordcraft_send_pinch_gesture(WordCraftHost* host, float scale, float velocity);
 void wordcraft_send_pan_gesture(WordCraftHost* host, float x, float y, float dx, float dy);
 void wordcraft_send_hover(WordCraftHost* host, float x, float y);

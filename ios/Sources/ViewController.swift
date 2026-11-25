@@ -1,9 +1,8 @@
 import UIKit
-import GameController
 
 /// Main root ViewController hosting WordCraft's GPU `MetalView` and bridging iPadOS system events
-/// (fullscreen status-bar suppression, keyboard insets, GameController mice/trackpads,
-/// Hold-Cmd UIKeyCommands, file pickers, pasteboard, and CoreText fonts).
+/// (fullscreen status-bar suppression, keyboard insets, Hold-Cmd UIKeyCommands,
+/// file pickers, pasteboard sync, and CoreText fonts).
 class ViewController: UIViewController {
     var metalView: MetalView!
     var host: OpaquePointer?
@@ -55,13 +54,14 @@ class ViewController: UIViewController {
             self?.handlePlatformAction(json)
         }
 
-        // Bind CAMetalLayer pointer directly to wgpu Metal surface
+        documentPicker.onFinished = { [weak self] in
+            self?.restoreKeyboardResponder()
+        }
+
         let layerPtr = Unmanaged.passUnretained(metalView.metalLayer).toOpaque()
         wordcraft_set_surface(createdHost, layerPtr)
 
         keyCommandsManager = KeyCommandsManager(host: createdHost, viewController: self)
-
-        // Register all iPadOS system & user-installed fonts in CoreText
         FontScanner.registerInstalledFonts(host: createdHost)
 
         syncSystemPasteboard()
@@ -74,7 +74,11 @@ class ViewController: UIViewController {
         setNeedsStatusBarAppearanceUpdate()
         syncSystemPasteboard()
         updateSafeInsets()
-        if !metalView.isFirstResponder {
+        restoreKeyboardResponder()
+    }
+
+    private func restoreKeyboardResponder() {
+        if presentedViewController == nil && !metalView.isFirstResponder {
             metalView.becomeFirstResponder()
         }
     }
@@ -128,7 +132,8 @@ class ViewController: UIViewController {
         case "keyboard.hide":
             keyboardHeight = 0
             updateSafeInsets()
-            metalView.resignFirstResponder()
+            // Hide the on-screen keyboard while keeping MetalView as firstResponder for physical keyboards
+            metalView.setSoftwareKeyboardVisible(false)
         default:
             break
         }
@@ -139,15 +144,21 @@ class ViewController: UIViewController {
         nc.addObserver(self, selector: #selector(keyboardWillShow(_:)), name: UIResponder.keyboardWillShowNotification, object: nil)
         nc.addObserver(self, selector: #selector(keyboardWillHide(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
         nc.addObserver(self, selector: #selector(appDidBecomeActive(_:)), name: UIApplication.didBecomeActiveNotification, object: nil)
-        nc.addObserver(self, selector: #selector(mouseDidConnect(_:)), name: .GCMouseDidConnect, object: nil)
-
-        for mouse in GCMouse.mice() {
-            attachMouseHandler(mouse)
-        }
+        nc.addObserver(self, selector: #selector(appWillResignActive(_:)), name: UIApplication.willResignActiveNotification, object: nil)
     }
 
     @objc private func appDidBecomeActive(_ notification: Notification) {
         syncSystemPasteboard()
+        if let host = host {
+            wordcraft_clear_modifiers(host)
+        }
+        restoreKeyboardResponder()
+    }
+
+    @objc private func appWillResignActive(_ notification: Notification) {
+        if let host = host {
+            wordcraft_clear_modifiers(host)
+        }
     }
 
     @objc private func keyboardWillShow(_ notification: Notification) {
@@ -161,33 +172,6 @@ class ViewController: UIViewController {
     @objc private func keyboardWillHide(_ notification: Notification) {
         keyboardHeight = 0
         updateSafeInsets()
-    }
-
-    @objc private func mouseDidConnect(_ notification: Notification) {
-        if let mouse = notification.object as? GCMouse {
-            attachMouseHandler(mouse)
-        }
-    }
-
-    private func attachMouseHandler(_ mouse: GCMouse) {
-        guard let input = mouse.mouseInput else { return }
-        input.mouseMovedHandler = { [weak self] _, dx, dy in
-            guard let self = self, let host = self.host else { return }
-            let center = CGPoint(x: self.view.bounds.midX + CGFloat(dx), y: self.view.bounds.midY - CGFloat(dy))
-            wordcraft_send_mouse(host, Float(center.x), Float(center.y), -1, false, 0, 0)
-        }
-        input.scroll.valueChangedHandler = { [weak self] _, xValue, yValue in
-            guard let self = self, let host = self.host else { return }
-            wordcraft_send_mouse(host, Float(self.view.bounds.midX), Float(self.view.bounds.midY), -1, false, xValue * 10.0, yValue * 10.0)
-        }
-        input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard let self = self, let host = self.host else { return }
-            wordcraft_send_mouse(host, Float(self.view.bounds.midX), Float(self.view.bounds.midY), 0, pressed, 0, 0)
-        }
-        input.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard let self = self, let host = self.host else { return }
-            wordcraft_send_mouse(host, Float(self.view.bounds.midX), Float(self.view.bounds.midY), 1, pressed, 0, 0)
-        }
     }
 
     func openIncomingURL(_ url: URL) {

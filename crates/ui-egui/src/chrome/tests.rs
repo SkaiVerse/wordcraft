@@ -719,3 +719,58 @@ fn status_bar_view_mode_toggles_and_zoom_slider_proportions() {
     });
     assert!(has_14pt_knob, "Zoom slider should paint a {glyph_md} pt thumb (ControlSize::Md) matching 14 pt IconButton icons inside {slider:?}");
 }
+
+/// Touch mode doubles the Quick Access Toolbar panel height and enlarges its buttons (Save, Undo, Redo,
+/// Undo History, Customize) to 2x so finger and Apple Pencil taps hit reliably without overlapping controls.
+#[test]
+fn touch_mode_doubles_quick_access_panel_and_buttons() {
+    use egui::accesskit::Role;
+
+    let pointer_h = harness(new_app());
+    let mut touch_app = new_app();
+    touch_app.set_input_mode(crate::InputMode::Touch);
+    let mut touch_h = harness(touch_app);
+
+    let pointer_bar = pointer_h.get_by_role_and_label(Role::Group, "Document1 \u{2014} Not saved").rect();
+    let touch_bar = touch_h.get_by_role_and_label(Role::Group, "Document1 \u{2014} Not saved").rect();
+    assert!(
+        touch_bar.height() >= pointer_bar.height() * 1.9,
+        "Touch title bar height {} should be ~2x Pointer height {}",
+        touch_bar.height(),
+        pointer_bar.height()
+    );
+
+    for label in ["Save", "Undo", "Undo History", "Redo", "Customize Quick Access Toolbar"] {
+        let p_rect = pointer_h.get_by_role_and_label(Role::Button, label).rect();
+        let t_rect = touch_h.get_by_role_and_label(Role::Button, label).rect();
+        assert!(t_rect.width() >= 48.0 && t_rect.height() >= 48.0, "{label}: Touch QAT button {t_rect:?} should be at least 48x48pt");
+        assert!(
+            t_rect.height() >= p_rect.height() * 1.9,
+            "{label}: Touch height {} should be ~2x Pointer height {}",
+            t_rect.height(),
+            p_rect.height()
+        );
+        assert!(touch_bar.expand(0.5).contains_rect(t_rect), "{label}: enlarged QAT button {t_rect:?} must fit inside bar {touch_bar:?}");
+    }
+
+    // Touch QAT buttons also fit without overlapping Search or trailing controls on narrow iPad widths.
+    let mut narrow_touch = new_app();
+    narrow_touch.set_input_mode(crate::InputMode::Touch);
+    let mut narrow_h = crate::test_harness::builder().with_size(egui::vec2(768.0, 1024.0)).build_ui_state(app_frame, narrow_touch);
+    crate::test_harness::frames(&mut narrow_h, 6);
+    let narrow_bar = narrow_h.get_by_role_and_label(Role::Group, "Document1 \u{2014} Not saved").rect();
+    let nodes = controls_on_row_of(&narrow_h, narrow_bar);
+    for (i, (la, a)) in nodes.iter().enumerate() {
+        for (lb, b) in nodes.iter().skip(i + 1) {
+            assert!(a.max.x <= b.min.x + 0.5 || b.max.x <= a.min.x + 0.5, "iPad 768pt: {la} {a:?} overlaps {lb} {b:?}");
+        }
+    }
+
+    // Verify enlarged Undo button still activates Undo in Touch mode.
+    touch_h.state_mut().run("text.insert", json!({"text": "Tap"})).unwrap();
+    crate::test_harness::frames(&mut touch_h, 2);
+    assert!(touch_h.state().session.can_undo());
+    let undo_at = touch_h.get_by_role_and_label(Role::Button, "Undo").rect().center();
+    click_at(&mut touch_h, undo_at, egui::PointerButton::Primary);
+    assert!(!touch_h.state().session.can_undo(), "Tapping enlarged Undo button should undo");
+}

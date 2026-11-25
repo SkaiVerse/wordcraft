@@ -296,6 +296,35 @@ impl WordCraftHost {
         }
     }
 
+    /// Dispatches a complete key press + delayed release for UIKit `UIKeyCommand` shortcuts.
+    pub fn send_key_tap(&mut self, key_code: i32, modifiers: u32) {
+        let mode = self.tracker.on_keyboard();
+        self.app.set_input_mode(mode);
+
+        let tap_modifiers = decode_modifiers(modifiers);
+        let prev_modifiers = self.current_modifiers;
+        if tap_modifiers != prev_modifiers {
+            self.raw_input.events.push(Event::ModifiersChanged(tap_modifiers));
+        }
+
+        if let Some(key) = map_key_code(key_code) {
+            self.raw_input.events.push(Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: tap_modifiers });
+            self.delayed_events.push(Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers: tap_modifiers });
+        }
+
+        if tap_modifiers != prev_modifiers {
+            self.delayed_events.push(Event::ModifiersChanged(prev_modifiers));
+        }
+    }
+
+    /// Clears any held keyboard modifiers (e.g. when the app loses focus or presses are cancelled).
+    pub fn clear_modifiers(&mut self) {
+        if self.current_modifiers != Modifiers::NONE {
+            self.current_modifiers = Modifiers::NONE;
+            self.raw_input.events.push(Event::ModifiersChanged(Modifiers::NONE));
+        }
+    }
+
     /// Dispatches hardware keyboard or virtual key events (`UIKeyboardHIDUsage` codes).
     pub fn send_key(&mut self, key_code: i32, modifiers: u32, is_down: bool, text: Option<&str>) {
         let mode = self.tracker.on_keyboard();
@@ -577,35 +606,117 @@ impl WordCraftHost {
         self.delayed_events.push(Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, modifiers: self.current_modifiers });
     }
 
-    /// Returns a JSON-formatted list of core commands registered with keyboard shortcuts
-    /// for iPadOS `UIKeyCommand` registration (native Hold-Cmd shortcut overlay).
+    /// Returns a JSON-formatted list of registered Mac commands with shortcuts from WordCraft's live
+    /// command registry for iPadOS `UIKeyCommand` registration (native Hold-Cmd shortcut discovery).
     pub fn get_key_commands_json(&self) -> String {
-        let commands = serde_json::json!([
-            { "id": "file.new", "title": "New Document", "input": "n", "modifiers": 8 },
-            { "id": "file.open", "title": "Open...", "input": "o", "modifiers": 8 },
-            { "id": "file.save", "title": "Save", "input": "s", "modifiers": 8 },
-            { "id": "file.saveAs", "title": "Save As...", "input": "s", "modifiers": 12 },
-            { "id": "file.print", "title": "Print...", "input": "p", "modifiers": 8 },
-            { "id": "edit.undo", "title": "Undo", "input": "z", "modifiers": 8 },
-            { "id": "edit.redo", "title": "Redo", "input": "z", "modifiers": 12 },
-            { "id": "edit.cut", "title": "Cut", "input": "x", "modifiers": 8 },
-            { "id": "edit.copy", "title": "Copy", "input": "c", "modifiers": 8 },
-            { "id": "edit.paste", "title": "Paste", "input": "v", "modifiers": 8 },
-            { "id": "edit.selectAll", "title": "Select All", "input": "a", "modifiers": 8 },
-            { "id": "edit.find", "title": "Find", "input": "f", "modifiers": 8 },
-            { "id": "edit.replace", "title": "Find & Replace", "input": "h", "modifiers": 8 },
-            { "id": "format.bold", "title": "Bold", "input": "b", "modifiers": 8 },
-            { "id": "format.italic", "title": "Italic", "input": "i", "modifiers": 8 },
-            { "id": "format.underline", "title": "Underline", "input": "u", "modifiers": 8 },
-            { "id": "format.strikethrough", "title": "Strikethrough", "input": "x", "modifiers": 12 },
-            { "id": "styles.pane", "title": "Styles Gallery", "input": "y", "modifiers": 8 },
-            { "id": "review.newComment", "title": "New Comment", "input": "a", "modifiers": 9 },
-            { "id": "view.navigation", "title": "Navigation Pane", "input": "d", "modifiers": 8 },
-            { "id": "view.fitWidth", "title": "Fit Page Width", "input": "0", "modifiers": 8 },
-            { "id": "view.zoom100", "title": "Actual Size (100%)", "input": "1", "modifiers": 8 }
-        ]);
-        commands.to_string()
+        let mut entries: Vec<Value> = Vec::new();
+        let mut seen = std::collections::HashSet::<(u32, i32)>::new();
+
+        let mut push_chord = |id: &str, title: &str, piece: &str| {
+            let Ok(binding) = craft::keymap::Binding::parse(piece) else {
+                return;
+            };
+            let chord = binding.trigger.chord;
+            // Register modified Mac shortcuts (Command chords, excluding navigation arrows/Space/Tab/H/W/Q/M
+            // reserved by system or handled directly with key-repeat in `pressesBegan`).
+            if !chord.mods.cmd {
+                return;
+            }
+            let Some((input, hid)) = keymap_key_to_uikit(chord.key) else {
+                return;
+            };
+            let reserved = !chord.mods.alt && !chord.mods.shift && !chord.mods.ctrl && matches!(input, "h" | "w" | "q" | "m");
+            if reserved {
+                return;
+            }
+            let mut mods: u32 = 8;
+            if chord.mods.alt {
+                mods |= 1;
+            }
+            if chord.mods.ctrl {
+                mods |= 2;
+            }
+            if chord.mods.shift {
+                mods |= 4;
+            }
+            if seen.insert((mods, hid)) {
+                entries.push(serde_json::json!({
+                    "id": id,
+                    "title": title,
+                    "input": input,
+                    "hid": hid,
+                    "modifiers": mods,
+                }));
+            }
+        };
+
+        for spec in self.app.session.registry.all() {
+            for piece in spec.shortcut.split(" / ").filter(|p| !p.is_empty()) {
+                push_chord(spec.id, spec.label, piece);
+            }
+        }
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
+            push_chord("ui.collapseRibbon", "Collapse the Ribbon", "Mod+Alt+R");
+        }
+        push_chord("ui.resetInterfaceSize", "Reset Interface Size", "Mod+Shift+0");
+
+        serde_json::Value::Array(entries).to_string()
     }
+}
+
+/// Converts a `craft::keymap::Key` suitable for a `UIKeyCommand` shortcut to `(UIKeyCommand.input, USB HID)`.
+fn keymap_key_to_uikit(key: craft::keymap::Key) -> Option<(&'static str, i32)> {
+    use craft::keymap::Key as K;
+    Some(match key {
+        K::A => ("a", 4),
+        K::B => ("b", 5),
+        K::C => ("c", 6),
+        K::D => ("d", 7),
+        K::E => ("e", 8),
+        K::F => ("f", 9),
+        K::G => ("g", 10),
+        K::H => ("h", 11),
+        K::I => ("i", 12),
+        K::J => ("j", 13),
+        K::K => ("k", 14),
+        K::L => ("l", 15),
+        K::M => ("m", 16),
+        K::N => ("n", 17),
+        K::O => ("o", 18),
+        K::P => ("p", 19),
+        K::Q => ("q", 20),
+        K::R => ("r", 21),
+        K::S => ("s", 22),
+        K::T => ("t", 23),
+        K::U => ("u", 24),
+        K::V => ("v", 25),
+        K::W => ("w", 26),
+        K::X => ("x", 27),
+        K::Y => ("y", 28),
+        K::Z => ("z", 29),
+        K::Num1 => ("1", 30),
+        K::Num2 => ("2", 31),
+        K::Num3 => ("3", 32),
+        K::Num4 => ("4", 33),
+        K::Num5 => ("5", 34),
+        K::Num6 => ("6", 35),
+        K::Num7 => ("7", 36),
+        K::Num8 => ("8", 37),
+        K::Num9 => ("9", 38),
+        K::Num0 => ("0", 39),
+        K::Minus => ("-", 45),
+        K::Equals => ("=", 46),
+        K::OpenBracket => ("[", 47),
+        K::CloseBracket => ("]", 48),
+        K::Backslash => ("\\", 49),
+        K::Semicolon => (";", 51),
+        K::Quote => ("'", 52),
+        K::Backtick => ("`", 53),
+        K::Comma => (",", 54),
+        K::Period => (".", 55),
+        K::Slash => ("/", 56),
+        _ => return None,
+    })
 }
 
 /// Decodes the FFI modifier bitmask (`1: Option/Alt, 2: Ctrl, 4: Shift, 8: Command`).
@@ -691,5 +802,53 @@ mod tests {
 
         let mods = decode_modifiers(8 | 4);
         assert!(mods.command && mods.mac_cmd && mods.shift && !mods.ctrl && !mods.alt);
+    }
+
+    #[test]
+    fn key_commands_json_emits_mac_shortcuts_and_skips_system_reserved() {
+        let host = WordCraftHost::new(2.0, 1024.0, 768.0);
+        let parsed: Vec<Value> = serde_json::from_str(&host.get_key_commands_json()).expect("valid JSON");
+        assert!(!parsed.is_empty());
+
+        let has_cmd = |id: &str| {
+            parsed.iter().any(|entry| {
+                entry.get("id").and_then(Value::as_str) == Some(id)
+                    && entry.get("hid").and_then(Value::as_i64).is_some_and(|h| h > 0)
+                    && entry.get("modifiers").and_then(Value::as_u64).is_some_and(|m| (m & 8) != 0)
+            })
+        };
+        assert!(has_cmd("format.bold"));
+        assert!(has_cmd("edit.undo"));
+        assert!(has_cmd("file.save"));
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
+            assert!(has_cmd("ui.collapseRibbon"));
+        } else {
+            assert!(has_cmd("text.registered"));
+        }
+        assert!(has_cmd("ui.resetInterfaceSize"));
+
+        // Unmodified Cmd+H / Cmd+W / Cmd+Q / Cmd+M must stay reserved for iPadOS.
+        let has_unmodified_reserved = parsed.iter().any(|entry| {
+            let input = entry.get("input").and_then(Value::as_str);
+            let mods = entry.get("modifiers").and_then(Value::as_u64);
+            matches!(input, Some("h" | "w" | "q" | "m")) && mods == Some(8)
+        });
+        assert!(!has_unmodified_reserved);
+    }
+
+    #[test]
+    fn send_key_tap_and_clear_modifiers_manage_modifier_state() {
+        let mut host = WordCraftHost::new(2.0, 1024.0, 768.0);
+        host.send_key_tap(5, 8);
+        assert_eq!(host.current_modifiers, Modifiers::NONE);
+        assert!(host.raw_input.events.iter().any(|e| matches!(e, Event::Key { key: Key::B, pressed: true, modifiers, .. } if modifiers.mac_cmd)));
+        assert!(host.delayed_events.iter().any(|e| matches!(e, Event::Key { key: Key::B, pressed: false, modifiers, .. } if modifiers.mac_cmd)));
+        assert!(host.delayed_events.iter().any(|e| matches!(e, Event::ModifiersChanged(m) if *m == Modifiers::NONE)));
+
+        host.send_key(5, 8, true, None);
+        assert!(host.current_modifiers.mac_cmd);
+        host.clear_modifiers();
+        assert_eq!(host.current_modifiers, Modifiers::NONE);
+        assert!(host.raw_input.events.iter().any(|e| matches!(e, Event::ModifiersChanged(m) if *m == Modifiers::NONE)));
     }
 }

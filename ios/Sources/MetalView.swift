@@ -47,33 +47,66 @@ private final class WordSelectionRect: UITextSelectionRect {
 }
 
 /// Direct CAMetalLayer view driving WordCraft's wgpu/egui surface, 1-finger touch scrolling,
-/// multi-touch gestures, long-press right-click, Apple Pencil Scribble, full `UITextInput`
-/// (spacebar floating-cursor trackpad, 2-finger selection, marked text), mouse/trackpad hover,
-/// and physical keyboard (`pressesBegan` / Mac chords).
+/// trackpad & mouse hover/click/right-click/scroll, physical keyboard (`pressesBegan` + repeat),
+/// full `UITextInput` (spacebar floating-cursor trackpad, selection, marked text), and Apple Pencil.
 class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInteractionDelegate, UIScribbleInteractionDelegate {
     var host: OpaquePointer?
     var onPlatformAction: ((String) -> Void)?
 
     private var displayLink: CADisplayLink?
     private var lastPanTranslation: CGPoint = .zero
+    private var lastTrackpadTranslation: CGPoint = .zero
     private var panOrigin: CGPoint = .zero
     private var lastRenderTime: CFTimeInterval = 0
     private var scrollVelocity: CGPoint = .zero
     private var isPanInertialGlide: Bool = false
     private var lastPinchScale: CGFloat = 1.0
     private var panRecognizer: UIPanGestureRecognizer?
+    private var trackpadScrollRecognizer: UIPanGestureRecognizer?
     private var longPressRecognizer: UILongPressGestureRecognizer?
 
-    // Map active UITouch object pointers to stable 64-bit touch IDs for Rust
+    // Keep MetalView as firstResponder even when the software keyboard is hidden so physical keyboards
+    // (`pressesBegan` / `UIKeyCommand`) keep working at all times.
+    private let hiddenInputPlaceholder = UIView(frame: .zero)
+    private var customEmptyInputView: UIView?
+
+    override var inputView: UIView? {
+        return customEmptyInputView
+    }
+
+    func setSoftwareKeyboardVisible(_ visible: Bool) {
+        let wantsHiddenView = !visible
+        let currentlyHidden = (customEmptyInputView != nil)
+        if wantsHiddenView != currentlyHidden {
+            customEmptyInputView = visible ? nil : hiddenInputPlaceholder
+            if isFirstResponder {
+                reloadInputViews()
+            }
+        }
+        if !isFirstResponder {
+            becomeFirstResponder()
+        }
+    }
+
+    // Track hardware key hold for native key-repeat on arrows, Backspace, typing keys, etc.
+    private struct HeldKey {
+        let keyCode: Int32
+        let modifiers: UInt32
+        let text: String?
+        let downAt: CFTimeInterval
+        var lastRepeatAt: CFTimeInterval
+    }
+    private var heldKeyForRepeat: HeldKey?
+
+    // Active touch/mouse tracking
     private var touchIdMap = [ObjectIdentifier: UInt64]()
     private var nextTouchId: UInt64 = 1
-    // Direct touches hitting interactive handles or Apple Pencil go straight to Rust immediately;
-    // normal finger touches wait in `pendingTapTouch` until tap lift or pan/long-press wins.
+    private var indirectButtonMap = [ObjectIdentifier: Int32]()
     private var immediateTouchIds = Set<ObjectIdentifier>()
     private var pendingTapTouch: ObjectIdentifier?
     private var pendingTapLocation: CGPoint = .zero
 
-    // MARK: - UITextInput State (Virtual Keyboard, Spacebar Floating Cursor & Selection)
+    // MARK: - UITextInput State
 
     private struct ImeSnapshot {
         let available: Bool
@@ -145,11 +178,9 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             wordcraft_ime_unmark_text(host, nil)
         }
         if text == "\n" || text == "\r" {
-            wordcraft_send_key(host, 40, 0, true, nil)
-            wordcraft_send_key(host, 40, 0, false, nil)
+            wordcraft_send_key_tap(host, 40, 0)
         } else if text == "\t" {
-            wordcraft_send_key(host, 43, 0, true, nil)
-            wordcraft_send_key(host, 43, 0, false, nil)
+            wordcraft_send_key_tap(host, 43, 0)
         } else {
             text.withCString { cStr in
                 _ = wordcraft_insert_text_at_selection(host, cStr)
@@ -162,7 +193,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         wordcraft_send_backspace(host)
     }
 
-    // MARK: - UITextInput Text & Selection Protocol
+    // MARK: - UITextInput Protocol
 
     var selectedTextRange: UITextRange? {
         get {
@@ -176,9 +207,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         }
         set {
             guard let host = host, let range = newValue as? WordTextRange else { return }
-            let start = range.startPos.offset
-            let end = range.endPos.offset
-            _ = wordcraft_ime_set_selection(host, start, end)
+            _ = wordcraft_ime_set_selection(host, range.startPos.offset, range.endPos.offset)
         }
     }
 
@@ -216,8 +245,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     func text(in range: UITextRange) -> String? {
         guard let wr = range as? WordTextRange else { return nil }
-        let snap = fetchImeSnapshot()
-        let ns = snap.text as NSString
+        let ns = fetchImeSnapshot().text as NSString
         let lo = max(0, min(wr.startPos.offset, ns.length))
         let hi = max(lo, min(wr.endPos.offset, ns.length))
         return ns.substring(with: NSRange(location: lo, length: hi - lo))
@@ -257,12 +285,9 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         let len = (fetchImeSnapshot().text as NSString).length
         let next: Int
         switch direction {
-        case .left, .up:
-            next = max(0, pos.offset - offset)
-        case .right, .down:
-            next = min(len, pos.offset + offset)
-        @unknown default:
-            next = pos.offset
+        case .left, .up: next = max(0, pos.offset - offset)
+        case .right, .down: next = min(len, pos.offset + offset)
+        @unknown default: next = pos.offset
         }
         return WordTextPosition(next)
     }
@@ -291,10 +316,8 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         guard let pos = position as? WordTextPosition else { return nil }
         let len = (fetchImeSnapshot().text as NSString).length
         switch direction {
-        case .left, .up:
-            return WordTextRange(start: 0, end: pos.offset)
-        default:
-            return WordTextRange(start: pos.offset, end: len)
+        case .left, .up: return WordTextRange(start: 0, end: pos.offset)
+        default: return WordTextRange(start: pos.offset, end: len)
         }
     }
 
@@ -304,24 +327,14 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
 
-    func caretRect(for position: UITextPosition) -> CGRect {
-        return fetchImeSnapshot().caretRect
-    }
-
-    func firstRect(for range: UITextRange) -> CGRect {
-        return fetchImeSnapshot().caretRect
-    }
-
-    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        return [WordSelectionRect(rect: fetchImeSnapshot().caretRect)]
-    }
+    func caretRect(for position: UITextPosition) -> CGRect { fetchImeSnapshot().caretRect }
+    func firstRect(for range: UITextRange) -> CGRect { fetchImeSnapshot().caretRect }
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [WordSelectionRect(rect: fetchImeSnapshot().caretRect)] }
 
     func closestPosition(to point: CGPoint) -> UITextPosition? {
         if let host = host {
             let off = wordcraft_ime_offset_at_point(host, Float(point.x), Float(point.y))
-            if off >= 0 {
-                return WordTextPosition(Int(off))
-            }
+            if off >= 0 { return WordTextPosition(Int(off)) }
         }
         return WordTextPosition(fetchImeSnapshot().selEnd)
     }
@@ -330,8 +343,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         guard let wr = range as? WordTextRange, let pos = closestPosition(to: point) as? WordTextPosition else {
             return range.start
         }
-        let clamped = max(wr.startPos.offset, min(wr.endPos.offset, pos.offset))
-        return WordTextPosition(clamped)
+        return WordTextPosition(max(wr.startPos.offset, min(wr.endPos.offset, pos.offset)))
     }
 
     func characterRange(at point: CGPoint) -> UITextRange? {
@@ -344,9 +356,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
     func beginFloatingCursor(at point: CGPoint) {
         floatingCursorLastPoint = point
         inputDelegate?.selectionWillChange(self)
-        if let host = host {
-            wordcraft_ime_reset_floating_cursor(host)
-        }
+        if let host = host { wordcraft_ime_reset_floating_cursor(host) }
         inputDelegate?.selectionDidChange(self)
     }
 
@@ -355,7 +365,6 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         let dx = Float(point.x - last.x)
         let dy = Float(point.y - last.y)
         floatingCursorLastPoint = point
-
         inputDelegate?.selectionWillChange(self)
         _ = wordcraft_ime_move_caret_by_delta(host, dx, dy, false)
         inputDelegate?.selectionDidChange(self)
@@ -363,22 +372,15 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     func endFloatingCursor() {
         floatingCursorLastPoint = nil
-        if let host = host {
-            wordcraft_ime_reset_floating_cursor(host)
-        }
+        if let host = host { wordcraft_ime_reset_floating_cursor(host) }
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.selectionDidChange(self)
     }
 
     // MARK: - Layer Setup
 
-    override class var layerClass: AnyClass {
-        return CAMetalLayer.self
-    }
-
-    var metalLayer: CAMetalLayer {
-        return layer as! CAMetalLayer
-    }
+    override class var layerClass: AnyClass { CAMetalLayer.self }
+    var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -404,13 +406,24 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
     }
 
     private func setupGestures() {
-        // Two-finger pinch-to-zoom
+        // Two-finger pinch-to-zoom (supports both direct fingers and trackpad pinch)
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
         pinch.delegate = self
         addGestureRecognizer(pinch)
 
-        // One-finger pan / scroll over document and scrollable UI panels
+        // Trackpad two-finger scroll & mouse wheel (`allowedScrollTypesMask = .all`, indirect scroll events only)
+        let trackpadPan = UIPanGestureRecognizer(target: self, action: #selector(handleTrackpadScroll(_:)))
+        trackpadPan.allowedScrollTypesMask = .all
+        trackpadPan.minimumNumberOfTouches = 0
+        trackpadPan.maximumNumberOfTouches = 0
+        trackpadPan.cancelsTouchesInView = false
+        trackpadPan.delegate = self
+        addGestureRecognizer(trackpadPan)
+        self.trackpadScrollRecognizer = trackpadPan
+
+        // One-finger direct touch scroll (excludes indirect mouse/trackpad drags so drag-selection works)
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 1
         pan.cancelsTouchesInView = true
@@ -418,8 +431,9 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         addGestureRecognizer(pan)
         self.panRecognizer = pan
 
-        // Long Press -> Right Click Context Menu
+        // Long Press -> Right Click Context Menu (direct finger press)
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         longPress.minimumPressDuration = 0.45
         longPress.allowableMovement = 12.0
         longPress.cancelsTouchesInView = true
@@ -446,6 +460,10 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
     }
 
     private func setupInteractions() {
+        // Continuous trackpad & mouse cursor movement tracking (iPadOS 13.4+)
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
+        addGestureRecognizer(hover)
+
         let pointerInteraction = UIPointerInteraction(delegate: self)
         addInteraction(pointerInteraction)
 
@@ -475,14 +493,29 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         let dt = lastRenderTime > 0 ? max(0.0, min(now - lastRenderTime, 0.05)) : (1.0 / 60.0)
         lastRenderTime = now
 
-        // Apply native inertial scroll decay keeping pointer_hover_pos over panOrigin
+        // Hardware keyboard auto-repeat (0.4s delay, 35ms interval)
+        if var held = heldKeyForRepeat {
+            if now - held.downAt >= 0.40 && now - held.lastRepeatAt >= 0.035 {
+                held.lastRepeatAt = now
+                heldKeyForRepeat = held
+                if let txt = held.text, !txt.isEmpty {
+                    txt.withCString { cStr in
+                        wordcraft_send_key(host, held.keyCode, held.modifiers, true, cStr)
+                    }
+                } else {
+                    wordcraft_send_key(host, held.keyCode, held.modifiers, true, nil)
+                }
+            }
+        }
+
+        // Inertial decay for direct-touch scrolling
         if isPanInertialGlide {
             let speed = hypot(scrollVelocity.x, scrollVelocity.y)
-            if speed > 15.0 {
+            if speed > 20.0 {
                 let dx = Float(scrollVelocity.x * dt)
                 let dy = Float(scrollVelocity.y * dt)
                 wordcraft_send_pan_gesture(host, Float(panOrigin.x), Float(panOrigin.y), dx, dy)
-                let damping = CGFloat(exp(-dt / 0.18))
+                let damping = CGFloat(exp(-dt / 0.14))
                 scrollVelocity.x *= damping
                 scrollVelocity.y *= damping
             } else {
@@ -494,7 +527,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
         wordcraft_render_frame(host)
 
-        // Pump outgoing UIKit actions (file pickers, export sheet, pasteboard sync, keyboard dismiss)
+        // Pump outgoing UIKit actions
         while let actionPtr = wordcraft_poll_platform_action(host) {
             let json = String(cString: actionPtr)
             wordcraft_free_string(actionPtr)
@@ -507,10 +540,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         let scale = window?.screen.scale ?? UIScreen.main.scale
         contentScaleFactor = scale
         metalLayer.contentsScale = scale
-        metalLayer.drawableSize = CGSize(
-            width: bounds.width * scale,
-            height: bounds.height * scale
-        )
+        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         if let host = host {
             wordcraft_resize(host, Float(bounds.width), Float(bounds.height), Float(scale))
         }
@@ -520,13 +550,8 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === panRecognizer || gestureRecognizer === longPressRecognizer {
-            // Yield when a selection handle, object corner, table border, or Apple Pencil stroke is active
-            if !immediateTouchIds.isEmpty {
-                return false
-            }
-            if let host = host, wordcraft_is_touch_drag_active(host) != 0 {
-                return false
-            }
+            if !immediateTouchIds.isEmpty { return false }
+            if let host = host, wordcraft_is_touch_drag_active(host) != 0 { return false }
         }
         return true
     }
@@ -538,22 +563,35 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         return false
     }
 
-    // MARK: - Touch Handling & Tap / Scroll / Handle Arbitration
+    // MARK: - Touch & Indirect Mouse/Trackpad Handling
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        // Arrest any active inertial scroll on finger down
         if isPanInertialGlide {
             scrollVelocity = .zero
             isPanInertialGlide = false
         }
-
         guard let host = host else { return }
+
+        // Ensure MetalView holds first responder cleanly on any click/tap
+        if !isFirstResponder {
+            becomeFirstResponder()
+        }
 
         for touch in touches {
             let objId = ObjectIdentifier(touch)
             let loc = touch.location(in: self)
 
-            let isImmediate = (touch.type != .direct)
+            // Route external Mouse / Magic Trackpad clicks cleanly via mouse API (preserving buttonMask + drag)
+            if touch.type == .indirect || touch.type == .indirectPointer {
+                let isSecondary = (event?.buttonMask.contains(.secondary) == true)
+                let button: Int32 = isSecondary ? 1 : 0
+                indirectButtonMap[objId] = button
+                if isSecondary { syncPasteboard(host) }
+                wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), button, true, 0, 0)
+                continue
+            }
+
+            let isImmediate = (touch.type == .pencil)
                 || (touches.count > 1)
                 || (wordcraft_is_near_touch_target(host, Float(loc.x), Float(loc.y)) != 0)
 
@@ -564,31 +602,42 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             } else {
                 pendingTapTouch = objId
                 pendingTapLocation = loc
-                // Keep hover pointer alive at finger position without pressing Primary yet
                 wordcraft_send_hover(host, Float(loc.x), Float(loc.y))
             }
         }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let host = host else { return }
         for touch in touches {
             let objId = ObjectIdentifier(touch)
-            if immediateTouchIds.contains(objId) {
+            if touch.type == .indirect || touch.type == .indirectPointer {
+                let loc = touch.location(in: self)
+                wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), -1, false, 0, 0)
+            } else if immediateTouchIds.contains(objId) {
                 sendTouch(touch, phase: 1) // Moved
             }
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let host = host else { return }
         var openKeyboard = false
+
         for touch in touches {
             let objId = ObjectIdentifier(touch)
             let loc = touch.location(in: self)
 
+            if touch.type == .indirect || touch.type == .indirectPointer {
+                let button = indirectButtonMap.removeValue(forKey: objId) ?? 0
+                wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), button, false, 0, 0)
+                continue
+            }
+
             if immediateTouchIds.contains(objId) {
                 immediateTouchIds.remove(objId)
                 sendTouch(touch, phase: 3) // Ended
-            } else if pendingTapTouch == objId, let host = host {
+            } else if pendingTapTouch == objId {
                 pendingTapTouch = nil
                 wordcraft_send_tap(host, Float(pendingTapLocation.x), Float(pendingTapLocation.y))
                 if touch.type == .direct && wordcraft_is_point_in_canvas(host, Float(loc.x), Float(loc.y)) != 0 {
@@ -598,14 +647,22 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             touchIdMap.removeValue(forKey: objId)
         }
 
-        if openKeyboard && !isFirstResponder {
-            becomeFirstResponder()
+        if openKeyboard {
+            setSoftwareKeyboardVisible(true)
         }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let host = host else { return }
         for touch in touches {
             let objId = ObjectIdentifier(touch)
+            if touch.type == .indirect || touch.type == .indirectPointer {
+                let loc = touch.location(in: self)
+                let button = indirectButtonMap.removeValue(forKey: objId) ?? 0
+                wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), button, false, 0, 0)
+                continue
+            }
+
             if immediateTouchIds.contains(objId) {
                 immediateTouchIds.remove(objId)
                 sendTouch(touch, phase: 4) // Cancelled
@@ -630,20 +687,11 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
         let loc = touch.location(in: self)
         let force = touch.maximumPossibleForce > 0 ? Float(touch.force / touch.maximumPossibleForce) : 0.5
-        let pointerType: Int32
-        switch touch.type {
-        case .pencil:
-            pointerType = 1 // ApplePencil
-        case .indirect, .indirectPointer:
-            pointerType = 2 // IndirectPointer
-        default:
-            pointerType = 0 // DirectTouch
-        }
-
+        let pointerType: Int32 = (touch.type == .pencil) ? 1 : 0
         wordcraft_send_touch(host, phase, Float(loc.x), Float(loc.y), id, force, pointerType)
     }
 
-    // MARK: - Physical Keyboard Forwarding (`pressesBegan` / `pressesEnded`)
+    // MARK: - Physical Keyboard Forwarding (`pressesBegan` / `pressesEnded` / Repeat)
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard let host = host else {
@@ -656,24 +704,48 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             guard let key = press.key else { continue }
             handledAny = true
 
-            let mods = modifierBitmask(key.modifierFlags)
+            let hid = Int32(key.keyCode.rawValue)
+            let mods = effectiveModifierBitmask(from: key)
+
             if (mods & 8) != 0 && key.charactersIgnoringModifiers.lowercased() == "v" {
                 syncPasteboard(host)
             }
 
             let text = key.characters
             if text.isEmpty {
-                wordcraft_send_key(host, Int32(key.keyCode.rawValue), mods, true, nil)
+                wordcraft_send_key(host, hid, mods, true, nil)
             } else {
                 text.withCString { cText in
-                    wordcraft_send_key(host, Int32(key.keyCode.rawValue), mods, true, cText)
+                    wordcraft_send_key(host, hid, mods, true, cText)
                 }
+            }
+
+            // Track non-modifier keys for smooth hardware key-repeat (arrows, backspace, typing)
+            if hid < 224 || hid > 231 {
+                let now = CACurrentMediaTime()
+                heldKeyForRepeat = HeldKey(keyCode: hid, modifiers: mods, text: text.isEmpty ? nil : text, downAt: now, lastRepeatAt: now)
             }
         }
 
         if !handledAny {
             super.pressesBegan(presses, with: event)
         }
+    }
+
+    override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard let host = host else {
+            super.pressesChanged(presses, with: event)
+            return
+        }
+        var handledAny = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            handledAny = true
+            let hid = Int32(key.keyCode.rawValue)
+            let mods = effectiveModifierBitmask(from: key)
+            wordcraft_send_key(host, hid, mods, true, nil)
+        }
+        if !handledAny { super.pressesChanged(presses, with: event) }
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -686,13 +758,26 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         for press in presses {
             guard let key = press.key else { continue }
             handledAny = true
-            let mods = modifierBitmask(key.modifierFlags)
-            wordcraft_send_key(host, Int32(key.keyCode.rawValue), mods, false, nil)
+            let hid = Int32(key.keyCode.rawValue)
+            let mods = releaseModifierBitmask(from: key)
+
+            if heldKeyForRepeat?.keyCode == hid {
+                heldKeyForRepeat = nil
+            }
+            wordcraft_send_key(host, hid, mods, false, nil)
         }
 
         if !handledAny {
             super.pressesEnded(presses, with: event)
         }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        heldKeyForRepeat = nil
+        if let host = host {
+            wordcraft_clear_modifiers(host)
+        }
+        super.pressesCancelled(presses, with: event)
     }
 
     private func modifierBitmask(_ flags: UIKeyModifierFlags) -> UInt32 {
@@ -701,6 +786,31 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         if flags.contains(.control) { bits |= 2 }
         if flags.contains(.shift) { bits |= 4 }
         if flags.contains(.command) { bits |= 8 }
+        return bits
+    }
+
+    private func effectiveModifierBitmask(from key: UIKey) -> UInt32 {
+        var bits = modifierBitmask(key.modifierFlags)
+        // Include modifier bit for the modifier key's own press (HID 224..231)
+        switch key.keyCode.rawValue {
+        case 224, 228: bits |= 2 // Control
+        case 225, 229: bits |= 4 // Shift
+        case 226, 230: bits |= 1 // Option/Alt
+        case 227, 231: bits |= 8 // Command
+        default: break
+        }
+        return bits
+    }
+
+    private func releaseModifierBitmask(from key: UIKey) -> UInt32 {
+        var bits = modifierBitmask(key.modifierFlags)
+        switch key.keyCode.rawValue {
+        case 224, 228: bits &= ~2
+        case 225, 229: bits &= ~4
+        case 226, 230: bits &= ~1
+        case 227, 231: bits &= ~8
+        default: break
+        }
         return bits
     }
 
@@ -714,7 +824,41 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         }
     }
 
-    // MARK: - Gesture Handlers
+    // MARK: - Gesture Handlers (Hover, Trackpad Scroll, Touch Pan, Pinch, Long Press)
+
+    @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
+        guard let host = host else { return }
+        switch gesture.state {
+        case .began, .changed:
+            let loc = gesture.location(in: self)
+            wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), -1, false, 0, 0)
+        case .ended, .cancelled:
+            wordcraft_send_hover_gone(host)
+        default:
+            break
+        }
+    }
+
+    @objc private func handleTrackpadScroll(_ gesture: UIPanGestureRecognizer) {
+        guard let host = host else { return }
+        let translation = gesture.translation(in: self)
+        let loc = gesture.location(in: self)
+
+        switch gesture.state {
+        case .began:
+            lastTrackpadTranslation = .zero
+            wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), -1, false, 0, 0)
+        case .changed:
+            let dx = Float(translation.x - lastTrackpadTranslation.x)
+            let dy = Float(translation.y - lastTrackpadTranslation.y)
+            lastTrackpadTranslation = translation
+            wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), -1, false, dx, dy)
+        case .ended, .cancelled, .failed:
+            lastTrackpadTranslation = .zero
+        default:
+            break
+        }
+    }
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         guard let host = host else { return }
@@ -746,8 +890,8 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
             wordcraft_send_pan_gesture(host, Float(panOrigin.x), Float(panOrigin.y), dx, dy)
         case .ended:
             let v = gesture.velocity(in: self)
-            if hypot(v.x, v.y) > 50.0 {
-                scrollVelocity = v
+            if hypot(v.x, v.y) > 120.0 {
+                scrollVelocity = CGPoint(x: v.x * 0.65, y: v.y * 0.65)
                 isPanInertialGlide = true
             } else {
                 scrollVelocity = .zero
@@ -788,7 +932,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         wordcraft_send_context_menu(host, Float(loc.x), Float(loc.y))
     }
 
-    // MARK: - UIPointerInteractionDelegate (Mouse / Trackpad Hover & Scroll)
+    // MARK: - UIPointerInteractionDelegate
 
     func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest, defaultRegion: UIPointerRegion) -> UIPointerRegion? {
         if let host = host {
@@ -797,7 +941,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         return defaultRegion
     }
 
-    // MARK: - UIScribbleInteractionDelegate (Apple Pencil Handwriting-to-Text)
+    // MARK: - UIScribbleInteractionDelegate
 
     func scribbleInteractionShouldDelayFocus(_ interaction: UIScribbleInteraction) -> Bool {
         return false
@@ -805,7 +949,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
 
     func scribbleInteractionWillBeginWriting(_ interaction: UIScribbleInteraction) {
         if let host = host {
-            wordcraft_set_input_mode(host, 2) // Hybrid mode when Pencil writes
+            wordcraft_set_input_mode(host, 2)
         }
     }
 }

@@ -102,6 +102,30 @@ pub unsafe extern "C" fn wordcraft_send_key(host: *mut WordCraftHost, key_code: 
     }
 }
 
+/// Dispatches a complete key shortcut tap (`UIKeyCommand` down+delayed up cleanly).
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_send_key_tap(host: *mut WordCraftHost, key_code: i32, modifiers: u32) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.send_key_tap(key_code, modifiers);
+    }
+}
+
+/// Clears any held modifier keys (called on `pressesCancelled` or backgrounding).
+///
+/// # Safety
+/// `host` must be null or a valid mutable `WordCraftHost` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wordcraft_clear_modifiers(host: *mut WordCraftHost) {
+    // SAFETY: Caller guarantees `host` is valid when non-null.
+    if let Some(host) = unsafe { host.as_mut() } {
+        host.clear_modifiers();
+    }
+}
+
 /// Returns the current active `InputMode` (0: Pointer, 1: Touch, 2: Hybrid).
 ///
 /// # Safety

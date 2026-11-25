@@ -60,10 +60,10 @@ impl ScrollSpeed {
     /// On Wayland (Linux/BSD), touchpads emit point deltas without compositor-side kinetic
     /// scaling or multiplier, which feels 4× slower than under XWayland / X11 (where winit emits
     /// fractional lines, ~1 line per 10 points, multiplied by line speed).
-    /// On macOS and web browsers, the host platform already accelerates trackpad deltas and handles
-    /// inertia, so Normal speed is 1.0.
+    /// On macOS, iOS/iPadOS, and web browsers, the host platform already accelerates trackpad/touch deltas
+    /// and handles inertia, so Normal speed is 1.0.
     pub fn touchpad_factor(self) -> f32 {
-        const NORMAL_TOUCHPAD_FACTOR: f32 = if cfg!(any(target_os = "macos", target_arch = "wasm32")) { 1.0 } else { 4.0 };
+        const NORMAL_TOUCHPAD_FACTOR: f32 = if cfg!(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")) { 1.0 } else { 4.0 };
         NORMAL_TOUCHPAD_FACTOR * self.factor()
     }
 
