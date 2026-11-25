@@ -55,3 +55,12 @@ jobs:
           path: build/WordCraft-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Build Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordCraft-ios-build-logs
+          path: build/build-logs.zip
+          if-no-files-found: ignore
+          retention-days: 14

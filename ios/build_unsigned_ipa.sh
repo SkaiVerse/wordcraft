@@ -5,6 +5,48 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+LOG_DIR="build/logs"
+rm -rf "$LOG_DIR" build/build-logs.zip
+mkdir -p "$LOG_DIR"
+
+package_logs() {
+    local exit_code=$?
+    set +e
+    echo "==> Packaging build logs into build/build-logs.zip (exit_code=$exit_code)..."
+    mkdir -p "$LOG_DIR/src"
+    cp -R ios/Sources "$LOG_DIR/src/" 2>/dev/null || true
+    cp ios/project.yml ios/Info.plist "$LOG_DIR/src/" 2>/dev/null || true
+
+    APP_BIN=$(find build/DerivedData -path "*/WordCraft.app/WordCraft" -type f 2>/dev/null | head -n 1)
+    if [ -n "${APP_BIN:-}" ] && [ -f "$APP_BIN" ]; then
+        otool -L "$APP_BIN" > "$LOG_DIR/native-libs.txt" 2>&1 || true
+    else
+        grep -E "sdk:|framework:" ios/project.yml > "$LOG_DIR/native-libs.txt" 2>/dev/null || true
+    fi
+
+    (cd build && zip -qr build-logs.zip logs) || true
+    echo "==> Saved build logs to build/build-logs.zip"
+    exit "$exit_code"
+}
+trap package_logs EXIT
+
+# Capture environment metadata
+{
+    echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+    echo "Git branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+    echo "Rustc: $(rustc --version 2>/dev/null || echo 'missing')"
+    echo "Cargo: $(cargo --version 2>/dev/null || echo 'missing')"
+    echo "XcodeGen: $(xcodegen --version 2>/dev/null || echo 'missing')"
+    echo "=== Xcode Version ==="
+    xcodebuild -version 2>&1 || true
+    echo "=== Available SDKs ==="
+    xcodebuild -showsdks 2>&1 || true
+    echo "=== App Version (Info.plist) ==="
+    /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" ios/Info.plist 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ios/Info.plist 2>/dev/null || true
+} > "$LOG_DIR/env.log"
+
 echo "=================================================="
 echo " WordCraft iPadOS: Unsigned .ipa Packaging Script "
 echo "=================================================="
@@ -20,7 +62,7 @@ fi
 
 # 2. Compile wordcraft-ios in release mode
 echo "==> Step 2/6: Compiling wordcraft-ios (release, aarch64-apple-ios)..."
-cargo build -p wordcraft-ios --target aarch64-apple-ios --release
+cargo build -p wordcraft-ios --target aarch64-apple-ios --release 2>&1 | tee "$LOG_DIR/rust-build.log"
 
 LIB_PATH="target/aarch64-apple-ios/release/libwordcraft.a"
 if [ ! -f "$LIB_PATH" ]; then
@@ -36,7 +78,7 @@ if ! command -v xcodegen &> /dev/null; then
     echo "Please install XcodeGen via Homebrew: brew install xcodegen"
     exit 1
 fi
-xcodegen generate --spec ios/project.yml
+xcodegen generate --spec ios/project.yml 2>&1 | tee "$LOG_DIR/xcodegen.log"
 
 # 4. Build WordCraft.app with xcodebuild (unsigned)
 echo "==> Step 4/6: Building WordCraft.app via xcodebuild..."
@@ -50,7 +92,7 @@ xcodebuild -project ios/WordCraft.xcodeproj \
     CODE_SIGN_IDENTITY="" \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGNING_ALLOWED=NO \
-    build
+    build 2>&1 | tee "$LOG_DIR/xcodebuild.log"
 
 APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/WordCraft.app"
 if [ ! -d "$APP_PATH" ]; then

@@ -9,10 +9,6 @@ final class ViewController: UIViewController {
     private var documentPickerManager: DocumentPickerManager?
     private var scribbleCoordinator: ScribbleAndPencilCoordinator?
 
-    override var keyCommands: [UIKeyCommand]? {
-        return keyCommandsManager?.buildKeyCommands()
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -58,6 +54,18 @@ final class ViewController: UIViewController {
 
     // MARK: - Safe Area & Virtual Keyboard Bridge
 
+    override var canBecomeFirstResponder: Bool {
+        return true
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        return keyCommandsManager?.buildKeyCommands()
+    }
+
+    @objc func handleKeyCommand(_ sender: UIKeyCommand) {
+        keyCommandsManager?.handleKeyCommand(sender)
+    }
+
     private func setupKeyboardObservers() {
         NotificationCenter.default.addObserver(
             self,
@@ -76,7 +84,7 @@ final class ViewController: UIViewController {
     @objc private func keyboardWillShow(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let keyboardFrame = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-              let host = hostPointer else { return }
+              hostPointer != nil else { return }
 
         let keyboardInView = view.convert(keyboardFrame, from: nil)
         let intersection = view.bounds.intersection(keyboardInView)

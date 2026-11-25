@@ -34,3 +34,6 @@ workflows:
           ./ios/build_unsigned_ipa.sh
     artifacts:
       - build/WordCraft-unsigned.ipa
+      - build/build-logs.zip
+      - build/logs/*.log
+      - build/logs/*.txt
