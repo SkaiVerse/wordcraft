@@ -195,7 +195,7 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UIKeyInput, UIPointerInter
 
     // MARK: - UIGestureRecognizerDelegate
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === panRecognizer {
             // Yield to active selection handle, object corner, table border, or Apple Pencil drag
             if let host = host, wordcraft_is_touch_drag_active(host) != 0 {

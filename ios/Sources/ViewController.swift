@@ -7,6 +7,7 @@ import GameController
 class ViewController: UIViewController {
     var metalView: MetalView!
     var host: OpaquePointer?
+    var hostPointer: OpaquePointer? { host }
     var keyCommandsManager: KeyCommandsManager?
     let documentPicker = DocumentPickerManager()
 

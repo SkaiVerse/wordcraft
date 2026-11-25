@@ -77,7 +77,7 @@ enum FontScanner {
 
     /// Reconstructs an OpenType / TrueType SFNT container from a `CGFont`'s tables.
     private static func serializeSFNT(_ cgFont: CGFont) -> Data? {
-        guard let cfTags = CGFontCopyTableTags(cgFont) else { return nil }
+        guard let cfTags = cgFont.tableTags else { return nil }
         let count = CFArrayGetCount(cfTags)
         if count <= 0 { return nil }
 
@@ -91,7 +91,7 @@ enum FontScanner {
         for i in 0..<count {
             let rawPtr = CFArrayGetValueAtIndex(cfTags, i)
             let tag = UInt32(truncatingIfNeeded: UInt(bitPattern: rawPtr))
-            guard let cfData = CGFontCopyTableForTag(cgFont, tag) else { continue }
+            guard let cfData = cgFont.table(for: tag) else { continue }
             let data = cfData as Data
             if tag == 0x43464620 || tag == 0x43464632 { // 'CFF ' or 'CFF2'
                 hasCFF = true
