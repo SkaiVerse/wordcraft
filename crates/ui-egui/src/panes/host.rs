@@ -47,10 +47,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui, mut centre: impl FnMut(&mut Ui, &mut
         egui::Area::new(backdrop_id).order(egui::Order::Middle).fixed_pos(screen_rect.min).show(ui.ctx(), |ui| {
             let (rect, resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(80));
-            if resp.clicked() {
-                if let Some(first) = open.first() {
-                    close_pane = Some(*first);
-                }
+            if resp.clicked()
+                && let Some(first) = open.first()
+            {
+                close_pane = Some(*first);
             }
         });
 

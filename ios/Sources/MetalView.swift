@@ -67,6 +67,7 @@ final class MetalView: UIView, UIGestureRecognizerDelegate, UIPointerInteraction
         let scale = Float(window?.windowScene?.screen.scale ?? UIScreen.main.scale)
         let w = Float(bounds.width)
         let h = Float(bounds.height)
+        metalLayer.contentsScale = CGFloat(scale)
         metalLayer.drawableSize = CGSize(width: bounds.width * CGFloat(scale), height: bounds.height * CGFloat(scale))
         wordcraft_resize(hostPointer, w, h, scale)
     }

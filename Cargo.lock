@@ -9151,7 +9151,9 @@ version = "0.18.1"
 dependencies = [
  "craft",
  "egui",
+ "egui-wgpu",
  "log",
+ "pollster 1.0.1",
  "serde_json",
  "wordcraft-doc",
  "wordcraft-docx",

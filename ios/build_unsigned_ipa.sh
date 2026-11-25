@@ -80,6 +80,11 @@ if ! command -v xcodegen &> /dev/null; then
 fi
 xcodegen generate --spec ios/project.yml 2>&1 | tee "$LOG_DIR/xcodegen.log"
 
+if ! grep -q "UIApplicationSceneManifest" ios/Info.plist; then
+    echo "Error: ios/Info.plist is missing UIApplicationSceneManifest (was it overwritten by XcodeGen?)"
+    exit 1
+fi
+
 # 4. Build WordCraft.app with xcodebuild (unsigned)
 echo "==> Step 4/6: Building WordCraft.app via xcodebuild..."
 mkdir -p build/DerivedData
@@ -118,8 +123,13 @@ rm -rf build/ipa_stage/Payload/WordCraft.app/_CodeSignature
 
 # 6. Verify .ipa contents and output size
 echo "==> Step 6/6: Verifying .ipa package..."
-if ! unzip -l build/WordCraft-unsigned.ipa | grep -q "Payload/WordCraft.app/Info.plist"; then
+unzip -Z1 build/WordCraft-unsigned.ipa > "$LOG_DIR/ipa-contents.txt"
+if ! grep -Fxq "Payload/WordCraft.app/Info.plist" "$LOG_DIR/ipa-contents.txt"; then
     echo "Error: IPA verification failed! Payload/WordCraft.app/Info.plist missing."
+    exit 1
+fi
+if ! grep -Fxq "Payload/WordCraft.app/WordCraft" "$LOG_DIR/ipa-contents.txt"; then
+    echo "Error: IPA verification failed! Payload/WordCraft.app/WordCraft executable missing."
     exit 1
 fi
 

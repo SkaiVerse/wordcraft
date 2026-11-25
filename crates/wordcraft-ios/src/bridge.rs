@@ -18,11 +18,23 @@ pub struct WordCraftHost {
     pub safe_insets: [f32; 4], // [top, bottom, left, right]
     pub keyboard_height: f32,
     pub frame_counter: u64,
+    pub start_time: std::time::Instant,
 }
 
 impl WordCraftHost {
     /// Creates a new host instance with an empty blank document.
     pub fn new(scale: f32, width: f32, height: f32) -> Self {
+        let scale = if scale > 0.0 { scale } else { 2.0 };
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_pixels_per_point(scale);
+
+        let lang = wordcraft_ui_egui::i18n::Lang::EN;
+        let spec = craft::ui::InstallSpec::new(craft::host::target::ShellInfo::current(), std::sync::Arc::new(craft::window::system::NoWindows))
+            .app_id("com.wordcraft.wordcraft-ios");
+        if let Err(e) = craft::ui::shell::embed::install(&egui_ctx, spec, &wordcraft_ui_egui::ui_fonts(lang)) {
+            log::error!("wordcraft-ios: craft runtime install failed: {e:?}");
+        }
+
         let region = Region::from_tag("en-US");
         let doc = wordcraft_engine::blank_document(&region);
         let mut session = Session::new(doc);
@@ -30,11 +42,12 @@ impl WordCraftHost {
 
         let services = Services::default();
         let mut app = WordApp::new(session, services);
+        app.autosave = false;
         app.set_input_mode(wordcraft_ui_egui::InputMode::Touch);
 
-        let egui_ctx = egui::Context::default();
         let mut raw_input = RawInput::default();
         raw_input.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)));
+        raw_input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
 
         Self {
             app,
@@ -45,13 +58,17 @@ impl WordCraftHost {
             safe_insets: [0.0; 4],
             keyboard_height: 0.0,
             frame_counter: 0,
+            start_time: std::time::Instant::now(),
         }
     }
 
     /// Resizes the viewport.
     pub fn resize(&mut self, width: f32, height: f32, scale: f32) {
+        let scale = if scale > 0.0 { scale } else { 2.0 };
         self.surface.resize(width, height, scale);
+        self.egui_ctx.set_pixels_per_point(scale);
         self.raw_input.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)));
+        self.raw_input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
     }
 
     /// Updates safe area insets and virtual keyboard height.
@@ -63,7 +80,7 @@ impl WordCraftHost {
 
     /// Dispatches a touch event from UIKit and processes gestures.
     pub fn send_touch(&mut self, phase: TouchPhase, x: f32, y: f32, touch_id: u64, force: f32, pointer_type: PointerType) {
-        let now_ms = (self.raw_input.time.unwrap_or(0.0) * 1000.0) as u64;
+        let now_ms = self.start_time.elapsed().as_millis() as u64;
         let (mode, gesture, is_rejected_palm) = self.tracker.on_touch(phase, x, y, touch_id, pointer_type, now_ms);
         self.app.set_input_mode(mode);
 
@@ -231,15 +248,30 @@ impl WordCraftHost {
 
     /// Renders one complete frame of WordCraft.
     pub fn render_frame(&mut self) {
+        let w = self.surface.width();
+        let h = self.surface.height();
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let scale = if self.surface.scale() > 0.0 { self.surface.scale() } else { 2.0 };
+
         self.frame_counter += 1;
         let mut raw = std::mem::take(&mut self.raw_input);
-        raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(self.surface.width(), self.surface.height())));
+        raw.time = Some(self.start_time.elapsed().as_secs_f64());
+        raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h)));
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+
+        craft::ui::shell::embed::before_input(&self.egui_ctx, |out| self.app.frame_input(out));
 
         let app_ref = &mut self.app;
-        let _ = self.egui_ctx.run_ui(raw, |ui| {
+        let full_output = self.egui_ctx.run_ui(raw, |ui| {
             app_ref.logic(ui.ctx());
             app_ref.ui(ui);
         });
+
+        let pixels_per_point = full_output.pixels_per_point;
+        let clipped_primitives = self.egui_ctx.tessellate(full_output.shapes, pixels_per_point);
+        self.surface.render(pixels_per_point, &full_output.textures_delta, &clipped_primitives);
     }
 
     /// Dispatches a command through WordCraft's central command registry.

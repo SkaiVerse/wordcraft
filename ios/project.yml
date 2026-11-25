@@ -13,12 +13,12 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
-    info:
-      path: Info.plist
     settings:
       base:
         PRODUCT_NAME: WordCraft
         PRODUCT_BUNDLE_IDENTIFIER: com.wordcraft.wordcraft-ios
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         SWIFT_VERSION: "5.0"
@@ -26,8 +26,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(PROJECT_DIR)/../target/aarch64-apple-ios/release
-          - $(PROJECT_DIR)/../target/aarch64-apple-ios/debug
+          - $(PROJECT_DIR)/../target/aarch64-apple-ios/$(CONFIGURATION:lower)
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(PROJECT_DIR)/../crates/wordcraft-ios/include
