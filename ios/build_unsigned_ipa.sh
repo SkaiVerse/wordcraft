@@ -30,6 +30,34 @@ package_logs() {
 }
 trap package_logs EXIT
 
+bump_ios_plist_version() {
+    local plist="ios/Info.plist"
+    local current_short current_build major minor _ next_short next_build
+    current_short=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist" 2>/dev/null || echo "0.1")
+    current_build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist" 2>/dev/null || echo "1")
+    IFS='.' read -r major minor _ <<< "$current_short"
+    case "$major" in ''|*[!0-9]*) major=0 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    case "$current_build" in ''|*[!0-9]*) current_build=0 ;; esac
+    minor=$((10#$minor + 1))
+    if [ "$minor" -ge 10 ]; then
+        major=$((10#$major + 1))
+        minor=0
+    else
+        major=$((10#$major))
+    fi
+    next_short="${major}.${minor}"
+    next_build=$((10#$current_build + 1))
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $next_short" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $next_build" "$plist"
+    echo "==> Bumped iOS version: $current_short ($current_build) -> $next_short ($next_build)"
+}
+
+# Local builds auto-bump by +0.1; CI builds keep the committed version unless FORCE_VERSION_BUMP=1.
+if { [ "${GITHUB_ACTIONS:-}" != "true" ] || [ "${FORCE_VERSION_BUMP:-0}" = "1" ]; } && [ "${SKIP_VERSION_BUMP:-0}" != "1" ]; then
+    bump_ios_plist_version
+fi
+
 # Capture environment metadata
 {
     echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
