@@ -748,7 +748,7 @@ pub unsafe extern "C" fn wordcraft_is_near_touch_target(host: *mut WordCraftHost
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wordcraft_is_point_in_canvas(host: *mut WordCraftHost, x: f32, y: f32) -> i32 {
     // SAFETY: Caller guarantees `host` is valid when non-null.
-    if let Some(host) = unsafe { host.as_ref() } { if host.is_point_in_canvas(x, y) { 1 } else { 0 } } else { 0 }
+    if let Some(host) = unsafe { host.as_mut() } { if host.is_point_in_canvas(x, y) { 1 } else { 0 } } else { 0 }
 }
 
 /// Draws an ink stroke from Apple Pencil on the specified page in Draw/Review mode.

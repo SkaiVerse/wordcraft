@@ -892,3 +892,29 @@ fn file_open_recent_list_has_no_thumbnail_letterboxing() {
     let row = recent_row(&h2, "sample.docx").expect("recent row renders");
     assert!(row.rect().height() > 0.0, "recent row has non-zero height: {:?}", row.rect());
 }
+
+/// The Backstage Back button matches the side-menu rows' alignment, row gap, and icon scale, and closes File.
+#[test]
+fn side_menu_back_button_matches_page_row_icon_alignment_and_spacing() {
+    use egui::accesskit::Role;
+
+    let mut h = file_page(new_app(), "home");
+    let back = h.get_by_role_and_label(Role::Button, "Back").rect();
+    let home = h.get_by_role_and_label(Role::Button, "Home").rect();
+    let new_row = h.get_by_role_and_label(Role::Button, "New").rect();
+
+    assert!((back.min.x - home.min.x).abs() < 1.0, "Back aligns horizontally with Home: {back:?} {home:?}");
+    assert!((back.width() - home.width()).abs() < 1.0, "Back spans the same rail column as Home: {back:?} {home:?}");
+    assert!((back.height() - home.height()).abs() <= 4.0, "Back keeps side-menu row height: {back:?} {home:?}");
+
+    let back_to_home_gap = home.min.y - back.max.y;
+    let home_to_new_gap = new_row.min.y - home.max.y;
+    assert!(
+        (back_to_home_gap - home_to_new_gap).abs() <= 1.0,
+        "Back-to-Home gap ({back_to_home_gap}) should match row-to-row gap ({home_to_new_gap})"
+    );
+
+    h.get_by_role_and_label(Role::Button, "Back").click();
+    h.run_steps(4);
+    assert!(!h.state().ui.backstage, "clicking Back closes Backstage");
+}

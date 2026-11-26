@@ -66,9 +66,11 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
     private var longPressRecognizer: UILongPressGestureRecognizer?
 
     // Keep MetalView as firstResponder even when the software keyboard is hidden so physical keyboards
-    // (`pressesBegan` / `UIKeyCommand`) keep working at all times.
+    // (`pressesBegan` / `UIKeyCommand`) keep working at all times. Start hidden so the virtual keyboard
+    // only opens when the user taps an editable page or text field.
     private let hiddenInputPlaceholder = UIView(frame: .zero)
-    private var customEmptyInputView: UIView?
+    private lazy var customEmptyInputView: UIView? = hiddenInputPlaceholder
+    private var lastDirectTapTime: CFTimeInterval = 0
 
     override var inputView: UIView? {
         return customEmptyInputView
@@ -86,6 +88,11 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         if !isFirstResponder {
             becomeFirstResponder()
         }
+    }
+
+    /// Allows programmatic keyboard presentation only immediately after a direct finger tap on a typeable field.
+    func allowProgrammaticKeyboardShow() -> Bool {
+        return (CACurrentMediaTime() - lastDirectTapTime) <= 0.45
     }
 
     // Track hardware key hold for native key-repeat on arrows, Backspace, typing keys, etc.
@@ -611,11 +618,20 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
         guard let host = host else { return }
         for touch in touches {
             let objId = ObjectIdentifier(touch)
+            let loc = touch.location(in: self)
             if touch.type == .indirect || touch.type == .indirectPointer {
-                let loc = touch.location(in: self)
                 wordcraft_send_mouse(host, Float(loc.x), Float(loc.y), -1, false, 0, 0)
-            } else if immediateTouchIds.contains(objId) {
-                sendTouch(touch, phase: 1) // Moved
+            } else {
+                if pendingTapTouch == objId {
+                    let dx = loc.x - pendingTapLocation.x
+                    let dy = loc.y - pendingTapLocation.y
+                    if hypot(dx, dy) > 8.0 {
+                        pendingTapTouch = nil
+                    }
+                }
+                if immediateTouchIds.contains(objId) {
+                    sendTouch(touch, phase: 1) // Moved
+                }
             }
         }
     }
@@ -639,8 +655,14 @@ class MetalView: UIView, UIGestureRecognizerDelegate, UITextInput, UIPointerInte
                 sendTouch(touch, phase: 3) // Ended
             } else if pendingTapTouch == objId {
                 pendingTapTouch = nil
+                let isDirectFinger = (touch.type == .direct)
+                let tapOnEditableCanvas = isDirectFinger
+                    && wordcraft_is_point_in_canvas(host, Float(pendingTapLocation.x), Float(pendingTapLocation.y)) != 0
+                if isDirectFinger {
+                    lastDirectTapTime = CACurrentMediaTime()
+                }
                 wordcraft_send_tap(host, Float(pendingTapLocation.x), Float(pendingTapLocation.y))
-                if touch.type == .direct && wordcraft_is_point_in_canvas(host, Float(loc.x), Float(loc.y)) != 0 {
+                if tapOnEditableCanvas {
                     openKeyboard = true
                 }
             }

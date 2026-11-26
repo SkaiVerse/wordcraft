@@ -258,111 +258,153 @@ pub fn paint_loupe(ui: &mut Ui, state: &TouchLoupeState, screen_rect: Rect) {
     ));
 }
 
+/// Resolved theme colors for floating touch bars (`show_quick_format_bar` and `show_touch_selection_toolbar`).
+struct TouchBarStyle {
+    chrome_bg: Color32,
+    raised_bg: Color32,
+    border: Color32,
+    divider: Color32,
+    shadow: Color32,
+    text: Color32,
+    btn_bg: Color32,
+    btn_stroke: Color32,
+    active_bg: Color32,
+    active_text: Color32,
+}
+
+impl TouchBarStyle {
+    fn from_ui(ui: &Ui) -> Self {
+        let to_c32 = |rgba: craft::theme::Rgba| Color32::from(craft::theme::Srgba::from(rgba));
+        let tokens = &craft::ui::runtime::env::Env::of(ui).tokens.color;
+        Self {
+            chrome_bg: to_c32(tokens.surface.chrome),
+            raised_bg: to_c32(tokens.surface.raised),
+            border: to_c32(tokens.line.border),
+            divider: to_c32(tokens.line.divider),
+            shadow: to_c32(tokens.surface.shadow),
+            text: to_c32(tokens.text.normal),
+            btn_bg: to_c32(tokens.surface.panel),
+            btn_stroke: to_c32(tokens.line.control_edge),
+            active_bg: to_c32(tokens.accent.soft),
+            active_text: to_c32(tokens.accent.on_soft),
+        }
+    }
+}
+
+/// Renders one high-contrast button inside a touch toolbar or keyboard accessory bar.
+fn touch_bar_button(ui: &mut Ui, label: &str, font_size: f32, min_size: egui::Vec2, corner_radius: u8, active: bool, style: &TouchBarStyle) -> bool {
+    let mut rich = egui::RichText::new(label).size(font_size).color(if active { style.active_text } else { style.text });
+    if active {
+        rich = rich.strong();
+    }
+    let fill = if active { style.active_bg } else { style.btn_bg };
+    let stroke = if active { Stroke::new(1.5, style.active_text) } else { Stroke::new(1.0, style.btn_stroke) };
+    let btn = egui::Button::new(rich).fill(fill).stroke(stroke).min_size(min_size).corner_radius(CornerRadius::same(corner_radius));
+    ui.add(btn).clicked()
+}
+
 /// Renders the Quick-Format Accessory Bar docked above the iPadOS virtual keyboard.
 pub fn show_quick_format_bar(app: &mut WordApp, ui: &mut Ui, screen_rect: Rect) {
     if app.keyboard_inset_bottom <= 0.0 || !app.input_mode.is_touch() {
         return;
     }
 
-    let bar_height = 44.0;
+    let bar_height = 46.0;
     let bar_y = screen_rect.max.y - app.keyboard_inset_bottom - bar_height;
     let bar_rect = Rect::from_min_size(pos2(screen_rect.min.x, bar_y), vec2(screen_rect.width(), bar_height));
-
-    let is_dark = ui.visuals().dark_mode;
-    let bg_color = if is_dark { Color32::from_rgba_unmultiplied(32, 32, 36, 245) } else { Color32::from_rgba_unmultiplied(245, 245, 248, 245) };
-    let border_color = if is_dark { Color32::from_gray(60) } else { Color32::from_gray(210) };
-
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.make_persistent_id("wordcraft_keyboard_accessory_bar")));
-
-    // Background bar
-    painter.rect_filled(bar_rect, CornerRadius::ZERO, bg_color);
-    painter.line_segment([bar_rect.left_top(), bar_rect.right_top()], Stroke::new(1.0, border_color));
+    let style = TouchBarStyle::from_ui(ui);
 
     // Read active format states for toggle buttons
     let st = wordcraft_engine::cmd::format::state(&app.session);
-    let is_active = |k: &str| match st.get(k) {
-        Some(serde_json::Value::Bool(b)) => *b,
-        _ => false,
-    };
+    let is_active = |k: &str| matches!(st.get(k), Some(serde_json::Value::Bool(b)) if *b);
     let bold_active = is_active("bold");
     let italic_active = is_active("italic");
     let underline_active = is_active("underline");
     let strike_active = is_active("strikethrough");
 
-    // Scope interactive controls inside the bar area
-    ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
-        egui::ScrollArea::horizontal()
-            .id_salt("accessory_bar_scroll")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                    ui.add_space(8.0);
+    // Put background and interactive controls on the SAME Foreground Area layer so the bar
+    // never covers its own buttons.
+    egui::Area::new(ui.make_persistent_id("wordcraft_keyboard_accessory_bar"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(bar_rect.min)
+        .movable(false)
+        .interactable(true)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_size(bar_rect.size());
+            ui.set_max_size(bar_rect.size());
+            let painter = ui.painter();
+            painter.rect_filled(bar_rect, CornerRadius::ZERO, style.chrome_bg);
+            painter.line_segment([bar_rect.left_top(), bar_rect.right_top()], Stroke::new(1.0, style.border));
+            painter.line_segment([bar_rect.left_bottom(), bar_rect.right_bottom()], Stroke::new(1.0, style.divider));
 
-                    let item = |ui: &mut Ui, label: &str, active: bool| -> bool {
-                        let btn =
-                            egui::Button::new(egui::RichText::new(label).size(16.0).color(if active { IOS_BLUE } else { ui.visuals().text_color() }))
-                                .min_size(vec2(38.0, 38.0))
-                                .corner_radius(CornerRadius::same(6));
-                        ui.add(btn).clicked()
-                    };
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("accessory_bar_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.horizontal_centered(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
+                            ui.add_space(8.0);
 
-                    if item(ui, "B", bold_active) {
-                        let _ = app.run("format.bold", json!({}));
-                    }
-                    if item(ui, "I", italic_active) {
-                        let _ = app.run("format.italic", json!({}));
-                    }
-                    if item(ui, "U", underline_active) {
-                        let _ = app.run("format.underline", json!({}));
-                    }
-                    if item(ui, "S", strike_active) {
-                        let _ = app.run("format.strikethrough", json!({}));
-                    }
+                            let item = |ui: &mut Ui, label: &str, active: bool| -> bool {
+                                touch_bar_button(ui, label, 15.0, vec2(40.0, 36.0), 6, active, &style)
+                            };
 
-                    ui.separator();
+                            if item(ui, "B", bold_active) {
+                                let _ = app.run("format.bold", json!({}));
+                            }
+                            if item(ui, "I", italic_active) {
+                                let _ = app.run("format.italic", json!({}));
+                            }
+                            if item(ui, "U", underline_active) {
+                                let _ = app.run("format.underline", json!({}));
+                            }
+                            if item(ui, "S", strike_active) {
+                                let _ = app.run("format.strikethrough", json!({}));
+                            }
 
-                    if item(ui, "• List", false) {
-                        let _ = app.run("format.bulletList", json!({}));
-                    }
-                    if item(ui, "1. List", false) {
-                        let _ = app.run("format.numbering", json!({}));
-                    }
-                    if item(ui, "⇤", false) {
-                        let _ = app.run("format.outdent", json!({}));
-                    }
-                    if item(ui, "⇥", false) {
-                        let _ = app.run("format.indent", json!({}));
-                    }
-                    if item(ui, "Styles", false) {
-                        let _ = app.run("styles.pane", json!({}));
-                    }
-                    if item(ui, "💬 Comment", false) {
-                        let _ = app.run("review.newComment", json!({}));
-                    }
+                            ui.separator();
 
-                    ui.separator();
+                            if item(ui, "• List", false) {
+                                let _ = app.run("format.bulletList", json!({}));
+                            }
+                            if item(ui, "1. List", false) {
+                                let _ = app.run("format.numbering", json!({}));
+                            }
+                            if item(ui, "<<", false) {
+                                let _ = app.run("format.outdent", json!({}));
+                            }
+                            if item(ui, ">>", false) {
+                                let _ = app.run("format.indent", json!({}));
+                            }
+                            if item(ui, "Styles", false) {
+                                let _ = app.run("styles.pane", json!({}));
+                            }
+                            if item(ui, "Comment", false) {
+                                let _ = app.run("review.newComment", json!({}));
+                            }
 
-                    if item(ui, "↶", false) {
-                        let _ = app.run("edit.undo", json!({}));
-                    }
-                    if item(ui, "↷", false) {
-                        let _ = app.run("edit.redo", json!({}));
-                    }
+                            ui.separator();
 
-                    ui.separator();
+                            if item(ui, "Undo", false) {
+                                let _ = app.run("edit.undo", json!({}));
+                            }
+                            if item(ui, "Redo", false) {
+                                let _ = app.run("edit.redo", json!({}));
+                            }
 
-                    // Dismiss keyboard button
-                    if item(ui, "⌨ ▾", false) {
-                        app.set_keyboard_inset_bottom(0.0);
-                        // Request canvas to yield focus
-                        ui.ctx().memory_mut(|m| m.stop_text_input());
-                    }
+                            ui.separator();
 
-                    ui.add_space(8.0);
-                });
+                            if item(ui, "Hide", false) {
+                                app.set_keyboard_inset_bottom(0.0);
+                                ui.ctx().memory_mut(|m| m.stop_text_input());
+                            }
+
+                            ui.add_space(8.0);
+                        });
+                    });
             });
-    });
+        });
 }
 
 /// Shows a floating contextual formatting toolbar (Cut, Copy, Paste, Bold, Italic, Underline, Comment)
@@ -378,8 +420,8 @@ pub fn show_touch_selection_toolbar(app: &mut WordApp, ui: &mut Ui, body: &PageB
 
     let Some(anchor) = app.canvas.mini_anchor else { return };
     let view_rect = body.view.rect;
-    let toolbar_width = 330.0;
-    let toolbar_height = 42.0;
+    let toolbar_width = 410.0_f32.min((view_rect.width() - 16.0).max(260.0));
+    let toolbar_height = 44.0;
 
     let center_x = anchor.center().x.clamp(view_rect.min.x + toolbar_width * 0.5 + 8.0, view_rect.max.x - toolbar_width * 0.5 - 8.0);
 
@@ -388,95 +430,80 @@ pub fn show_touch_selection_toolbar(app: &mut WordApp, ui: &mut Ui, body: &PageB
     let (bar_y, flipped) = if above_y >= view_rect.min.y + 8.0 { (above_y, false) } else { (anchor.max.y + 12.0, true) };
 
     let bar_rect = Rect::from_min_size(pos2(center_x - toolbar_width * 0.5, bar_y), vec2(toolbar_width, toolbar_height));
+    let style = TouchBarStyle::from_ui(ui);
 
-    let is_dark = ui.visuals().dark_mode;
-    let bg_color = if is_dark { Color32::from_rgba_unmultiplied(36, 36, 40, 248) } else { Color32::from_rgba_unmultiplied(248, 248, 252, 248) };
-    let border_color = if is_dark { Color32::from_gray(65) } else { Color32::from_gray(200) };
+    // Put shadow, rounded pill surface, notch, and interactive buttons in the SAME Tooltip Area
+    // so buttons paint ON TOP of the pill surface with crisp contrast.
+    egui::Area::new(ui.make_persistent_id("touch_selection_floating_toolbar"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(bar_rect.min)
+        .movable(false)
+        .interactable(true)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_size(bar_rect.size());
+            ui.set_max_size(bar_rect.size());
 
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, ui.make_persistent_id("touch_selection_floating_toolbar")));
+            let painter = ui.painter();
+            let shadow = Shadow { offset: [0, 4], blur: 14, spread: 0, color: style.shadow };
+            painter.add(shadow.as_shape(bar_rect, CornerRadius::same(8)));
+            painter.rect_filled(bar_rect, CornerRadius::same(8), style.raised_bg);
+            painter.rect_stroke(bar_rect, CornerRadius::same(8), Stroke::new(1.0, style.border), egui::StrokeKind::Outside);
 
-    // Outer drop shadow
-    let shadow = Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(50) };
-    painter.add(shadow.as_shape(bar_rect, CornerRadius::same(8)));
-
-    // Rounded pill background & border
-    painter.rect_filled(bar_rect, CornerRadius::same(8), bg_color);
-    painter.rect_stroke(bar_rect, CornerRadius::same(8), Stroke::new(1.0, border_color), egui::StrokeKind::Outside);
-
-    // Callout notch pointing to the selection
-    let notch_x = anchor.center().x.clamp(bar_rect.min.x + 12.0, bar_rect.max.x - 12.0);
-    let (tip, base_left, base_right) = if flipped {
-        (pos2(notch_x, bar_rect.min.y - 7.0), pos2(notch_x - 7.0, bar_rect.min.y + 0.5), pos2(notch_x + 7.0, bar_rect.min.y + 0.5))
-    } else {
-        (pos2(notch_x, bar_rect.max.y + 7.0), pos2(notch_x - 7.0, bar_rect.max.y - 0.5), pos2(notch_x + 7.0, bar_rect.max.y - 0.5))
-    };
-    painter.add(egui::Shape::convex_polygon(vec![base_left, tip, base_right], bg_color, Stroke::new(1.0, border_color)));
-
-    // Interactive buttons inside toolbar
-    ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-            ui.add_space(4.0);
-
-            let action_btn = |ui: &mut Ui, label: &str| -> bool {
-                let btn = egui::Button::new(egui::RichText::new(label).size(13.5).color(ui.visuals().text_color()))
-                    .min_size(vec2(36.0, 32.0))
-                    .corner_radius(CornerRadius::same(5));
-                ui.add(btn).clicked()
+            let notch_x = anchor.center().x.clamp(bar_rect.min.x + 12.0, bar_rect.max.x - 12.0);
+            let (tip, base_left, base_right) = if flipped {
+                (pos2(notch_x, bar_rect.min.y - 7.0), pos2(notch_x - 7.0, bar_rect.min.y + 0.5), pos2(notch_x + 7.0, bar_rect.min.y + 0.5))
+            } else {
+                (pos2(notch_x, bar_rect.max.y + 7.0), pos2(notch_x - 7.0, bar_rect.max.y - 0.5), pos2(notch_x + 7.0, bar_rect.max.y - 0.5))
             };
+            painter.add(egui::Shape::convex_polygon(vec![base_left, tip, base_right], style.raised_bg, Stroke::new(1.0, style.border)));
 
-            if action_btn(ui, "Cut") {
-                let _ = app.run("edit.cut", json!({}));
-                ui.ctx().request_repaint();
-            }
-            if action_btn(ui, "Copy") {
-                let _ = app.run("edit.copy", json!({}));
-                ui.ctx().request_repaint();
-            }
-            if action_btn(ui, "Paste") {
-                let _ = app.run("edit.paste", json!({}));
-                ui.ctx().request_repaint();
-            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+                    ui.add_space(6.0);
 
-            ui.separator();
+                    if touch_bar_button(ui, "Cut", 13.5, vec2(40.0, 34.0), 5, false, &style) {
+                        let _ = app.run("edit.cut", json!({}));
+                        ui.ctx().request_repaint();
+                    }
+                    if touch_bar_button(ui, "Copy", 13.5, vec2(44.0, 34.0), 5, false, &style) {
+                        let _ = app.run("edit.copy", json!({}));
+                        ui.ctx().request_repaint();
+                    }
+                    if touch_bar_button(ui, "Paste", 13.5, vec2(46.0, 34.0), 5, false, &style) {
+                        let _ = app.run("edit.paste", json!({}));
+                        ui.ctx().request_repaint();
+                    }
 
-            let st = wordcraft_engine::cmd::format::state(&app.session);
-            let is_active = |k: &str| match st.get(k) {
-                Some(serde_json::Value::Bool(b)) => *b,
-                _ => false,
-            };
+                    ui.separator();
 
-            let format_btn = |ui: &mut Ui, label: &str, active: bool| -> bool {
-                let color = if active { IOS_BLUE } else { ui.visuals().text_color() };
-                let btn = egui::Button::new(egui::RichText::new(label).size(14.0).strong().color(color))
-                    .min_size(vec2(30.0, 32.0))
-                    .corner_radius(CornerRadius::same(5));
-                ui.add(btn).clicked()
-            };
+                    let st = wordcraft_engine::cmd::format::state(&app.session);
+                    let is_active = |k: &str| matches!(st.get(k), Some(serde_json::Value::Bool(b)) if *b);
 
-            if format_btn(ui, "B", is_active("bold")) {
-                let _ = app.run("format.bold", json!({}));
-                ui.ctx().request_repaint();
-            }
-            if format_btn(ui, "I", is_active("italic")) {
-                let _ = app.run("format.italic", json!({}));
-                ui.ctx().request_repaint();
-            }
-            if format_btn(ui, "U", is_active("underline")) {
-                let _ = app.run("format.underline", json!({}));
-                ui.ctx().request_repaint();
-            }
+                    if touch_bar_button(ui, "B", 14.0, vec2(32.0, 34.0), 5, is_active("bold"), &style) {
+                        let _ = app.run("format.bold", json!({}));
+                        ui.ctx().request_repaint();
+                    }
+                    if touch_bar_button(ui, "I", 14.0, vec2(32.0, 34.0), 5, is_active("italic"), &style) {
+                        let _ = app.run("format.italic", json!({}));
+                        ui.ctx().request_repaint();
+                    }
+                    if touch_bar_button(ui, "U", 14.0, vec2(32.0, 34.0), 5, is_active("underline"), &style) {
+                        let _ = app.run("format.underline", json!({}));
+                        ui.ctx().request_repaint();
+                    }
 
-            ui.separator();
+                    ui.separator();
 
-            if action_btn(ui, "💬") {
-                let _ = app.run("review.newComment", json!({}));
-                ui.ctx().request_repaint();
-            }
+                    if touch_bar_button(ui, "Comment", 13.0, vec2(66.0, 34.0), 5, false, &style) {
+                        let _ = app.run("review.newComment", json!({}));
+                        ui.ctx().request_repaint();
+                    }
 
-            ui.add_space(4.0);
+                    ui.add_space(6.0);
+                });
+            });
         });
-    });
 }
 
 /// Paints enlarged touch grab handles for selected objects (images, shapes, tables) in Touch mode.

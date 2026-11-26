@@ -130,6 +130,10 @@ class ViewController: UIViewController {
         case "clipboard.set":
             let text = (dict["text"] as? String) ?? ""
             UIPasteboard.general.string = text
+        case "keyboard.show":
+            if metalView.allowProgrammaticKeyboardShow() {
+                metalView.setSoftwareKeyboardVisible(true)
+            }
         case "keyboard.hide":
             keyboardHeight = 0
             updateSafeInsets()

@@ -43,8 +43,8 @@ static APP_SIZES: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = 
 /// iPadOS so the Quick Access Toolbar buttons have roomy 2x touch targets for fingers and Apple Pencil.
 static APP_SIZES_TOUCH: std::sync::LazyLock<std::sync::Arc<craft::theme::AppSizes>> = std::sync::LazyLock::new(|| {
     let all = size_map(&[("typography.display.size", 26.0), ("typography.display.line_height", 32.0)]);
-    let compact = size_map(&[("size.bar.title", 64.0)]);
-    let comfortable = size_map(&[("size.bar.title", 76.0)]);
+    let compact = size_map(&[("size.bar.title", 64.0), ("size.bar.status", 29.0)]);
+    let comfortable = size_map(&[("size.bar.title", 76.0), ("size.bar.status", 36.0)]);
     std::sync::Arc::new(craft::theme::AppSizes { all, compact, comfortable, ..Default::default() })
 });
 
@@ -224,9 +224,39 @@ impl WordApp {
             || self.canvas.ruler_gesture.is_some()
     }
 
-    /// Whether `(x, y)` lies inside the editable document canvas (and no modal or backstage is covering it).
-    pub fn is_point_in_canvas(&self, x: f32, y: f32) -> bool {
-        !self.ui.backstage && !self.modal_open() && self.canvas.contains(egui::pos2(x, y))
+    /// Whether `(x, y)` lies on a directly typeable document page (not Backstage, modal, Read Mode,
+    /// an open menu/popup/font picker, floating toolbar, margin/ruler, or selected object).
+    pub fn is_point_in_canvas(&mut self, x: f32, y: f32) -> bool {
+        if self.ui.backstage || self.modal_open() || !self.has_document() || self.session.view.read_mode || self.is_touch_drag_active() {
+            return false;
+        }
+        let p = egui::pos2(x, y);
+        if !self.canvas.contains(p) {
+            return false;
+        }
+        // Reject taps when any craft overlay/menu/font dropdown or egui popup is open or covers (x, y).
+        if self.ctx.as_ref().is_some_and(|ctx| {
+            egui::Popup::is_any_open(ctx)
+                || craft::ui::runtime::overlay::any_open(ctx, craft::ui::runtime::overlay::OpenFilter::Keys)
+                || ctx.layer_id_at(p).is_some_and(|l| l.order != egui::Order::Background)
+        }) {
+            return false;
+        }
+        if !self.canvas.shown.pages.iter().any(|pl| pl.rect.contains(p)) {
+            return false;
+        }
+        if let Some((pos, _)) = crate::objects::selected(self)
+            && let Some(obj) = self.session.layout().object(&pos, self.session.page_hint)
+            && let Some(pr) = self.canvas.shown.pages.iter().find(|pl| pl.page == obj.page)
+        {
+            let r = obj.rect;
+            let min_p = pr.to_screen(craft::behavior::kurbo::Point::new(f64::from(r.x), f64::from(r.y)));
+            let max_p = pr.to_screen(craft::behavior::kurbo::Point::new(f64::from(r.right()), f64::from(r.bottom())));
+            if egui::Rect::from_two_pos(min_p, max_p).contains(p) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Whether `(x, y)` is currently near an interactive touch drag handle (caret/selection teardrop

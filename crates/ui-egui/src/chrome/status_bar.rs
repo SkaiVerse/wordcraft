@@ -33,20 +33,25 @@ pub(crate) fn show(ui: &mut Ui, _cx: &mut BodyCx<'_>, app: &mut WordApp) {
     // The controls give way in a narrow window (#5886): the step that fits the room the page left them in the last
     // pass.
     let step = app.chrome.status_fit.step();
+    let touch = cfg!(target_os = "ios") || app.input_mode.is_touch();
     // The bar runs its body and its trailing region one after the other, never one inside the other, so each
     // borrow below succeeds.
     let app = RefCell::new(app);
     let (page, group) = (std::cell::Cell::new(None), std::cell::Cell::new(None));
     let bar = Bar::new(tl!("Status Bar").to_string(), BarKind::Status)
         .trailing(|ui, _| {
-            if let Ok(mut a) = app.try_borrow_mut() {
-                group.set(controls(&mut a, ui, step));
-            }
+            with_touch_size(ui, touch, |ui| {
+                if let Ok(mut a) = app.try_borrow_mut() {
+                    group.set(controls(&mut a, ui, step));
+                }
+            });
         })
         .show(ui, |ui, _| {
-            if let Ok(mut a) = app.try_borrow_mut() {
-                page.set(Some(readouts(&mut a, ui)));
-            }
+            with_touch_size(ui, touch, |ui| {
+                if let Ok(mut a) = app.try_borrow_mut() {
+                    page.set(Some(readouts(&mut a, ui)));
+                }
+            });
         });
     if let (Some(page), Some(group), Ok(mut a)) = (page.get(), group.get(), app.try_borrow_mut()) {
         // The texts scroll under the controls, and one shown only in part isn't drawn; the page is always shown, so
@@ -61,6 +66,11 @@ pub(crate) fn show(ui: &mut Ui, _cx: &mut BodyCx<'_>, app: &mut WordApp) {
 /// The room the status bar keeps beside the page and the controls: its pads at both ends and the gaps before and
 /// after its end region.
 const STATUS_FIT_GAP: f32 = 32.0;
+
+/// Enlarges status bar controls from `Sm` to `Md` (~1.2x) in touch mode and on iPadOS.
+fn with_touch_size<R>(ui: &mut Ui, touch: bool, body: impl FnOnce(&mut Ui) -> R) -> R {
+    if touch { craft::ui::runtime::env::with_env(ui, |overrides| overrides.size = Some(ControlSize::Md), body) } else { body(ui) }
+}
 
 /// A status item: a ghost button of `text`, with an optional tooltip.
 fn item(ui: &mut Ui, text: String, tip: Option<String>) -> ButtonOutput {

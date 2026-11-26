@@ -774,3 +774,43 @@ fn touch_mode_doubles_quick_access_panel_and_buttons() {
     click_at(&mut touch_h, undo_at, egui::PointerButton::Primary);
     assert!(!touch_h.state().session.can_undo(), "Tapping enlarged Undo button should undo");
 }
+
+/// Touch mode enlarges the status bar and its view/zoom controls by ~1.2x without clipping or overlapping.
+#[test]
+fn touch_mode_enlarges_status_bar_and_controls_by_about_1_2x() {
+    use egui::accesskit::Role;
+
+    let pointer_h = harness(new_app());
+    let mut touch_app = new_app();
+    touch_app.set_input_mode(crate::InputMode::Touch);
+    let touch_h = harness(touch_app);
+
+    let pointer_bar = pointer_h.get_by_role_and_label(Role::Status, "Status Bar").rect();
+    let touch_bar = touch_h.get_by_role_and_label(Role::Status, "Status Bar").rect();
+    assert!(
+        touch_bar.height() >= pointer_bar.height() * 1.15 && touch_bar.height() <= pointer_bar.height() * 1.35,
+        "Touch status bar height {} should be ~1.2x Pointer height {}",
+        touch_bar.height(),
+        pointer_bar.height()
+    );
+
+    for label in ["Focus", "Read Mode", "Print Layout", "Web Layout", "Zoom Out", "Zoom In"] {
+        let p_rect = pointer_h.get_by_role_and_label(Role::Button, label).rect();
+        let t_rect = touch_h.get_by_role_and_label(Role::Button, label).rect();
+        assert!(
+            t_rect.height() >= p_rect.height() * 1.15,
+            "{label}: Touch height {} should be ~1.2x Pointer height {}",
+            t_rect.height(),
+            p_rect.height()
+        );
+        assert!(touch_bar.expand(0.5).contains_rect(t_rect), "{label}: Touch control {t_rect:?} must fit inside {touch_bar:?}");
+    }
+
+    let mut narrow_touch = new_app();
+    narrow_touch.set_input_mode(crate::InputMode::Touch);
+    let mut narrow_h = crate::test_harness::builder().with_size(egui::vec2(768.0, 1024.0)).build_ui_state(app_frame, narrow_touch);
+    crate::test_harness::frames(&mut narrow_h, 6);
+    let focus = narrow_h.get_by_role_and_label(Role::Button, "Focus").rect();
+    let page = narrow_h.get_by_role_and_label(Role::Button, "Page 1 of 1").rect();
+    assert!(page.max.x <= focus.min.x + 0.5, "iPad 768pt: Page readout {page:?} overlaps Focus {focus:?}");
+}

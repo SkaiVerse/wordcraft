@@ -28,6 +28,8 @@ pub struct WordCraftHost {
     pub floating_cursor_accum: (f32, f32),
     pub safe_insets: [f32; 4], // [top, bottom, left, right]
     pub keyboard_height: f32,
+    pub prev_text_field_ime: bool,
+    pub prev_focused_widget: Option<egui::Id>,
     pub frame_counter: u64,
     pub start_time: std::time::Instant,
 }
@@ -93,6 +95,8 @@ impl WordCraftHost {
             floating_cursor_accum: (0.0, 0.0),
             safe_insets: [0.0; 4],
             keyboard_height: 0.0,
+            prev_text_field_ime: false,
+            prev_focused_widget: None,
             frame_counter: 0,
             start_time: std::time::Instant::now(),
         }
@@ -416,8 +420,23 @@ impl WordCraftHost {
             self.raw_input.events.append(&mut self.delayed_events);
         }
 
-        // If the virtual keyboard accessory bar dismiss button ("⌨ ▾") zeroed `keyboard_inset_bottom`
-        // while UIKit still reported an active keyboard, tell UIKit to resign first responder.
+        // Track focus transitions on non-canvas editable TextEdit fields (Search, Dialogs, Backstage Properties)
+        // so tapping a typeable field shows the virtual keyboard, while menus/buttons/scrolls never do.
+        let canvas_focused = self.app.canvas.focused(&self.egui_ctx);
+        let focused_id = self.egui_ctx.memory(|m| m.focused());
+        let popup_open = egui::Popup::is_any_open(&self.egui_ctx)
+            || craft::ui::runtime::overlay::any_open(&self.egui_ctx, craft::ui::runtime::overlay::OpenFilter::Keys);
+        let text_field_ime = self.app.input_mode.is_touch() && !canvas_focused && !popup_open && full_output.platform_output.ime.is_some();
+        if text_field_ime && (!self.prev_text_field_ime || focused_id != self.prev_focused_widget) {
+            self.pending_actions.push_back(serde_json::json!({ "action": "keyboard.show" }));
+        } else if !text_field_ime && self.prev_text_field_ime && !canvas_focused {
+            self.pending_actions.push_back(serde_json::json!({ "action": "keyboard.hide" }));
+        }
+        self.prev_text_field_ime = text_field_ime;
+        self.prev_focused_widget = focused_id;
+
+        // If the virtual keyboard accessory bar dismiss button ("Hide") zeroed `keyboard_inset_bottom`
+        // while UIKit still reported an active keyboard, tell UIKit to hide its software inputView.
         if self.keyboard_height > 0.0 && self.app.keyboard_inset_bottom <= 0.0 {
             self.keyboard_height = 0.0;
             self.pending_actions.push_back(serde_json::json!({ "action": "keyboard.hide" }));
@@ -485,7 +504,7 @@ impl WordCraftHost {
     }
 
     /// Whether `(x, y)` lies on the editable document canvas (and no modal/backstage covers it).
-    pub fn is_point_in_canvas(&self, x: f32, y: f32) -> bool {
+    pub fn is_point_in_canvas(&mut self, x: f32, y: f32) -> bool {
         self.app.is_point_in_canvas(x, y)
     }
 

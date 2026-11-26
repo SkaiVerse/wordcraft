@@ -2301,3 +2301,59 @@ fn a_linked_text_box_shows_and_follows_its_link_from_inside() {
     let (start, _) = wordcraft_engine::cmd::insert::bookmark_range(&s.doc, "Spot").unwrap();
     assert!(s.sel.is_collapsed() && s.sel.focus == start, "the caret went to the bookmark: {:?}", s.sel);
 }
+
+#[test]
+fn touch_bars_render_visible_buttons_and_is_point_in_canvas_requires_editable_page() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::from_text("Touch editing test")), crate::Services::default());
+    a.set_input_mode(crate::InputMode::Touch);
+    a.set_keyboard_inset_bottom(300.0);
+    a.run("select.all", json!({})).unwrap();
+
+    let mut h = crate::test_harness::builder().with_size(egui::vec2(1024.0, 900.0)).build_ui_state(
+        |ui, app: &mut WordApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        a,
+    );
+    steps(&mut h, 6);
+
+    // Both floating touch bars must expose interactive buttons with positive rects below the ribbon.
+    for label in ["Cut", "Copy", "Paste"] {
+        let on_selection_bar = h.query_all_by_role_and_label(Role::Button, label).any(|n| n.rect().is_positive() && n.rect().min.y > 160.0);
+        assert!(on_selection_bar, "{label} selection touch bar button must be laid out");
+    }
+    let accessory_hide = h.get_by_role_and_label(Role::Button, "Hide").rect();
+    assert!(accessory_hide.is_positive() && accessory_hide.min.y >= 550.0, "Hide accessory button: {accessory_hide:?}");
+
+    // Center of rendered page 0 is editable; ribbon/titlebar/margin/read-mode/backstage are not.
+    let page_center = h.state().canvas.shown.pages.first().map(|p| p.rect.center()).expect("page 0 laid out");
+    assert!(h.state_mut().is_point_in_canvas(page_center.x, page_center.y));
+    assert!(!h.state_mut().is_point_in_canvas(page_center.x, 10.0), "title bar/ribbon is not canvas");
+    assert!(!h.state_mut().is_point_in_canvas(4.0, page_center.y), "outer grey margin is not canvas");
+
+    // In Read Mode, tapping the page must not request keyboard editing.
+    h.state_mut().session.view.read_mode = true;
+    assert!(!h.state_mut().is_point_in_canvas(page_center.x, page_center.y));
+    h.state_mut().session.view.read_mode = false;
+
+    // On Backstage, tapping must not trigger the canvas keyboard.
+    h.state_mut().ui.backstage = true;
+    assert!(!h.state_mut().is_point_in_canvas(page_center.x, page_center.y));
+    h.state_mut().ui.backstage = false;
+
+    // Opening a craft menu overlay (e.g. Customize Quick Access Toolbar) blocks page keyboard trigger.
+    let qat_menu_pos = h.get_by_label("Customize Quick Access Toolbar").rect().center();
+    h.event(egui::Event::PointerMoved(qat_menu_pos));
+    steps(&mut h, 2);
+    h.event(egui::Event::PointerButton { pos: qat_menu_pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    steps(&mut h, 1);
+    h.event(egui::Event::PointerButton { pos: qat_menu_pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    steps(&mut h, 6);
+    assert!(craft::ui::runtime::overlay::any_open(&h.ctx, craft::ui::runtime::overlay::OpenFilter::Keys), "menu overlay should be open");
+    assert!(!h.state_mut().is_point_in_canvas(page_center.x, page_center.y), "open popup blocks page keyboard trigger");
+}
